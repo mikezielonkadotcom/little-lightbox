@@ -1,5 +1,5 @@
 /**
- * This Little Lightbox of Mine v2.1.0 — Enhanced Mode JS
+ * This Little Lightbox of Mine v2.2.0 — Enhanced Mode JS
  *
  * Vanilla JS: modal, gallery, swipe, keyboard, animation, focus trap.
  * No dependencies. ES2017+.
@@ -225,6 +225,15 @@
 		}
 	}
 
+	function scrollToRecipe() {
+		var selector = config.recipeCardSelector || '[id^="wprm-recipe-container-"], .wprm-recipe-container';
+		var target = document.querySelector(selector);
+
+		if (target) {
+			target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		}
+	}
+
 	function afterClose() {
 		modal.classList.remove('is-visible');
 		modal.style.display = 'none';
@@ -242,26 +251,32 @@
 			lastFocused.focus();
 		}
 
-		// Execute pending jump scroll.
+		// Execute pending jump scroll after the close flow completes.
 		if (pendingJump) {
 			pendingJump = false;
-			var selector = config.recipeCardSelector || '.wprm-recipe-container';
-			var target = document.querySelector(selector);
-			if (target) {
-				var behavior = prefersReducedMotion() ? 'auto' : 'smooth';
-				target.scrollIntoView({ behavior: behavior, block: 'start' });
-			}
+			setTimeout(scrollToRecipe, 150);
 		}
 	}
 
 	// ── Update modal content ─────────────────────────────────────────────
+	function pageHasRecipeCard() {
+		return !!document.querySelector('.wprm-recipe-container');
+	}
+
+	function isInsideRecipeCard(wrapEl) {
+		return !!(wrapEl && wrapEl.closest('.wprm-recipe-container'));
+	}
+
+	function shouldShowJumpLink(wrapEl) {
+		return !!(config.wprmJumpEnabled && pageHasRecipeCard() && !isInsideRecipeCard(wrapEl));
+	}
+
 	function updateModalContent() {
 		var wrapEl = activeGroup[activeIndex];
 		if (!wrapEl) return;
 
 		var src = wrapEl.getAttribute('data-mzv-lb-src') || '';
 		var caption = wrapEl.getAttribute('data-mzv-lb-caption') || '';
-		var hasJump = wrapEl.getAttribute('data-mzv-lb-has-jump') === '1';
 
 		modalImg.src = src;
 		modalImg.alt = caption;
@@ -270,8 +285,9 @@
 		modalCaption.textContent = caption;
 		modalCaption.classList.toggle('is-empty', !caption);
 
-		// Jump link.
-		if (config.wprmJumpEnabled && hasJump) {
+		// Jump link: only show when this page has a WPRM recipe card and the
+		// active image is outside that recipe card.
+		if (shouldShowJumpLink(wrapEl)) {
 			modalJump.classList.remove('is-hidden');
 		} else {
 			modalJump.classList.add('is-hidden');
