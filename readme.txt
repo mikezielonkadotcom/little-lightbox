@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.2.0
+Stable tag: 2.3.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -33,6 +33,12 @@ This Little Lightbox of Mine automatically wraps `.entry-content` images in a co
 * Body scroll lock, focus trap, full accessibility support
 
 == Changelog ==
+
+= 2.3.0 =
+* Fix: Close, prev, and next buttons now reset native button appearance (`appearance: none`), preventing platform/theme-default button chrome from painting over the SVG icons (manifested as a grey square in place of the close X on some browsers/themes).
+* Changed: Renamed all frontend CSS classes, IDs, data attributes, and JS config object from `mzv-lb-*` / `mzvLbConfig` to `llb-*` / `llbConfig`. **Breaking** for any custom CSS or JS that targeted the old prefix.
+* Changed: Bumped specificity on close/prev/next button rules with `#llb-modal` scope so theme button rules can't override them.
+* Note: Existing settings, post meta, and database keys are unchanged — no data migration required.
 
 = 2.2.0 =
 * Fix: Jump to Recipe now closes the Enhanced lightbox before smoothly scrolling to the WPRM recipe container.
