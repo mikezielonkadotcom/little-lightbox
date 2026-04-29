@@ -1,5 +1,5 @@
 /**
- * This Little Lightbox of Mine v2.2.0 — Enhanced Mode JS
+ * This Little Lightbox of Mine v2.3.0 — Enhanced Mode JS
  *
  * Vanilla JS: modal, gallery, swipe, keyboard, animation, focus trap.
  * No dependencies. ES2017+.
@@ -8,7 +8,7 @@
 	'use strict';
 
 	// ── State ────────────────────────────────────────────────────────────
-	var config = window.mzvLbConfig || {};
+	var config = window.llbConfig || {};
 	var modal, modalImg, modalCaption, modalClose, modalPrev, modalNext, modalCounter, modalJump, modalBackdrop;
 	var activeGroup = null;
 	var activeIndex = 0;
@@ -35,8 +35,8 @@
 	}
 
 	function trackLightboxOpen(wrapEl) {
-		var imageSrc = wrapEl.getAttribute('data-mzv-lb-src') || '';
-		var imageAlt = wrapEl.getAttribute('data-mzv-lb-caption') || '';
+		var imageSrc = wrapEl.getAttribute('data-llb-src') || '';
+		var imageAlt = wrapEl.getAttribute('data-llb-caption') || '';
 		var img = wrapEl.querySelector('img');
 
 		if (!imageAlt && img) {
@@ -54,12 +54,12 @@
 
 	// ── Init ─────────────────────────────────────────────────────────────
 	function init() {
-		var wraps = document.querySelectorAll('.mzv-lb-wrap');
+		var wraps = document.querySelectorAll('.llb-wrap');
 		if (!wraps.length) return;
 
 		// Build gallery groups.
 		wraps.forEach(function (wrap) {
-			var group = wrap.getAttribute('data-mzv-lb-group') || 'content';
+			var group = wrap.getAttribute('data-llb-group') || 'content';
 			if (!groups[group]) groups[group] = [];
 			groups[group].push(wrap);
 		});
@@ -84,7 +84,7 @@
 	// ── Modal DOM ────────────────────────────────────────────────────────
 	function createModal() {
 		modal = document.createElement('div');
-		modal.id = 'mzv-lb-modal';
+		modal.id = 'llb-modal';
 		modal.setAttribute('role', 'dialog');
 		modal.setAttribute('aria-modal', 'true');
 		modal.setAttribute('aria-label', 'Image lightbox');
@@ -93,48 +93,48 @@
 		var i18n = config.i18n || {};
 
 		modalBackdrop = document.createElement('div');
-		modalBackdrop.className = 'mzv-lb-backdrop';
+		modalBackdrop.className = 'llb-backdrop';
 		modal.appendChild(modalBackdrop);
 
 		modalPrev = document.createElement('button');
-		modalPrev.className = 'mzv-lb-prev is-hidden';
+		modalPrev.className = 'llb-prev is-hidden';
 		modalPrev.setAttribute('aria-label', i18n.prev || 'Previous image');
 		modal.appendChild(modalPrev);
 
 		modalNext = document.createElement('button');
-		modalNext.className = 'mzv-lb-next is-hidden';
+		modalNext.className = 'llb-next is-hidden';
 		modalNext.setAttribute('aria-label', i18n.next || 'Next image');
 		modal.appendChild(modalNext);
 
 		var content = document.createElement('div');
-		content.className = 'mzv-lb-content';
+		content.className = 'llb-content';
 
 		modalImg = document.createElement('img');
-		modalImg.className = 'mzv-lb-full';
+		modalImg.className = 'llb-full';
 		modalImg.setAttribute('loading', 'lazy');
 		modalImg.setAttribute('decoding', 'async');
 		content.appendChild(modalImg);
 
 		modalCaption = document.createElement('span');
-		modalCaption.className = 'mzv-lb-caption';
+		modalCaption.className = 'llb-caption';
 		content.appendChild(modalCaption);
 
 		modalJump = document.createElement('a');
-		modalJump.className = 'mzv-lb-jump-link is-hidden';
+		modalJump.className = 'llb-jump-link is-hidden';
 		modalJump.href = '#';
 		modalJump.setAttribute('role', 'button');
 		modalJump.textContent = i18n.jumpToRecipe || 'Jump to Recipe ↓';
 		content.appendChild(modalJump);
 
 		modalCounter = document.createElement('span');
-		modalCounter.className = 'mzv-lb-counter is-hidden';
+		modalCounter.className = 'llb-counter is-hidden';
 		modalCounter.setAttribute('aria-live', 'polite');
 		content.appendChild(modalCounter);
 
 		modal.appendChild(content);
 
 		modalClose = document.createElement('button');
-		modalClose.className = 'mzv-lb-close';
+		modalClose.className = 'llb-close';
 		modalClose.setAttribute('aria-label', i18n.close || 'Close image');
 		modal.appendChild(modalClose);
 
@@ -161,7 +161,7 @@
 		lastFocused = wrapEl;
 		pendingJump = false;
 
-		var group = wrapEl.getAttribute('data-mzv-lb-group') || 'content';
+		var group = wrapEl.getAttribute('data-llb-group') || 'content';
 		activeGroup = groups[group] || [];
 		activeIndex = activeGroup.indexOf(wrapEl);
 		if (activeIndex < 0) activeIndex = 0;
@@ -175,7 +175,7 @@
 
 		// Set animation duration.
 		var duration = getDuration();
-		modal.style.setProperty('--mzv-lb-duration', duration + 'ms');
+		modal.style.setProperty('--llb-duration', duration + 'ms');
 
 		if (shouldAnimate()) {
 			// Force reflow before adding class.
@@ -189,7 +189,7 @@
 		}
 
 		// Lock body scroll.
-		document.documentElement.classList.add('mzv-lb-open');
+		document.documentElement.classList.add('llb-open');
 
 		// Focus close button.
 		modalClose.focus();
@@ -240,7 +240,7 @@
 		modal.setAttribute('aria-hidden', 'true');
 
 		// Restore scroll.
-		document.documentElement.classList.remove('mzv-lb-open');
+		document.documentElement.classList.remove('llb-open');
 
 		// Clear image src.
 		modalImg.src = '';
@@ -275,8 +275,8 @@
 		var wrapEl = activeGroup[activeIndex];
 		if (!wrapEl) return;
 
-		var src = wrapEl.getAttribute('data-mzv-lb-src') || '';
-		var caption = wrapEl.getAttribute('data-mzv-lb-caption') || '';
+		var src = wrapEl.getAttribute('data-llb-src') || '';
+		var caption = wrapEl.getAttribute('data-llb-caption') || '';
 
 		modalImg.src = src;
 		modalImg.alt = caption;

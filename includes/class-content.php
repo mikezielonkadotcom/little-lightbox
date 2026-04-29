@@ -81,7 +81,7 @@ class MZV_LB_Content {
 			],
 		];
 
-		wp_localize_script( 'little-lightbox', 'mzvLbConfig', $config );
+		wp_localize_script( 'little-lightbox', 'llbConfig', $config );
 	}
 
 	/**
@@ -144,7 +144,7 @@ class MZV_LB_Content {
 			$counter++;
 			$img      = $item['img'];
 			$group    = $item['group'];
-			$id       = 'mzv-lb-' . $counter;
+			$id       = 'llb-' . $counter;
 			$alt      = $img->getAttribute( 'alt' );
 			$full_src = $this->get_full_size_url( $img );
 
@@ -171,16 +171,16 @@ class MZV_LB_Content {
 	 */
 	private function build_enhanced_markup( DOMElement $img, string $full_src, string $group, array $opts, DOMDocument $doc ): DOMElement {
 		$wrap = $doc->createElement( 'span' );
-		$wrap->setAttribute( 'class', 'mzv-lb-wrap' );
-		$wrap->setAttribute( 'data-mzv-lb-src', $full_src );
-		$wrap->setAttribute( 'data-mzv-lb-group', $group );
+		$wrap->setAttribute( 'class', 'llb-wrap' );
+		$wrap->setAttribute( 'data-llb-src', $full_src );
+		$wrap->setAttribute( 'data-llb-group', $group );
 		$wrap->setAttribute( 'role', 'button' );
 		$wrap->setAttribute( 'tabindex', '0' );
 		$wrap->setAttribute( 'aria-label', __( 'Open image in lightbox', 'little-lightbox' ) );
 
 		// Caption.
 		$caption = $this->get_caption_value( $img, $opts );
-		$wrap->setAttribute( 'data-mzv-lb-caption', $caption );
+		$wrap->setAttribute( 'data-llb-caption', $caption );
 
 		// WPRM jump hint. JS performs the final DOM-based check so the link only
 		// appears when the page has a rendered recipe card and the active image is
@@ -189,7 +189,7 @@ class MZV_LB_Content {
 		if ( 'recipe' !== $group && $opts['wprm_jump_enabled'] && $this->current_post_has_recipe() ) {
 			$has_jump = '1';
 		}
-		$wrap->setAttribute( 'data-mzv-lb-has-jump', $has_jump );
+		$wrap->setAttribute( 'data-llb-has-jump', $has_jump );
 
 		// Clone original image.
 		$img_clone = $img->cloneNode( true );
@@ -197,13 +197,13 @@ class MZV_LB_Content {
 
 		// Hover overlay.
 		$hover = $doc->createElement( 'span' );
-		$hover->setAttribute( 'class', 'mzv-lb-hover' );
+		$hover->setAttribute( 'class', 'llb-hover' );
 		$hover->setAttribute( 'aria-hidden', 'true' );
 		$wrap->appendChild( $hover );
 
 		// Mobile hint.
 		$mobile = $doc->createElement( 'span' );
-		$mobile->setAttribute( 'class', 'mzv-lb-mobile-hint' );
+		$mobile->setAttribute( 'class', 'llb-mobile-hint' );
 		$mobile->setAttribute( 'aria-hidden', 'true' );
 		$wrap->appendChild( $mobile );
 
@@ -221,7 +221,7 @@ class MZV_LB_Content {
 		}
 
 		// Build exclusion class list.
-		$excluded = [ 'no-lightbox', 'mzv-lb-wrap' ];
+		$excluded = [ 'no-lightbox', 'llb-wrap' ];
 		if ( ! empty( $opts['excluded_classes'] ) ) {
 			$user_classes = array_map( 'trim', explode( ',', $opts['excluded_classes'] ) );
 			$user_classes = array_filter( $user_classes );

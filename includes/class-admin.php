@@ -93,13 +93,13 @@ class MZV_LB_Admin {
 			</form>
 		</div>
 		<style>
-			.mzv-lb-enhanced-only { transition: opacity .2s; }
-			.mzv-lb-enhanced-only.is-disabled { opacity: .5; pointer-events: none; }
+			.llb-enhanced-only { transition: opacity .2s; }
+			.llb-enhanced-only.is-disabled { opacity: .5; pointer-events: none; }
 		</style>
 		<script>
 		(function(){
 			var radios = document.querySelectorAll('input[name="mzv_lightbox_options[lightbox_mode]"]');
-			var enhanced = document.querySelectorAll('.mzv-lb-enhanced-only');
+			var enhanced = document.querySelectorAll('.llb-enhanced-only');
 			function toggle() {
 				var mode = document.querySelector('input[name="mzv_lightbox_options[lightbox_mode]"]:checked');
 				var isCss = mode && mode.value === 'css';
@@ -146,7 +146,7 @@ class MZV_LB_Admin {
 			'description' => __( 'Description (attachment)', 'little-lightbox' ),
 			'none'        => __( 'None (no caption)', 'little-lightbox' ),
 		];
-		echo '<fieldset class="mzv-lb-enhanced-only">';
+		echo '<fieldset class="llb-enhanced-only">';
 		foreach ( $options as $key => $label ) {
 			printf(
 				'<label><input type="radio" name="mzv_lightbox_options[caption_source]" value="%s" %s> %s</label><br>',
@@ -188,7 +188,7 @@ class MZV_LB_Admin {
 
 	public function field_gallery_enabled(): void {
 		$opts = MZV_LB_Settings::get_options();
-		echo '<div class="mzv-lb-enhanced-only">';
+		echo '<div class="llb-enhanced-only">';
 		printf(
 			'<label><input type="checkbox" name="mzv_lightbox_options[gallery_enabled]" value="1" %s> %s</label>',
 			checked( $opts['gallery_enabled'], true, false ),
@@ -200,7 +200,7 @@ class MZV_LB_Admin {
 
 	public function field_animations_enabled(): void {
 		$opts = MZV_LB_Settings::get_options();
-		echo '<div class="mzv-lb-enhanced-only">';
+		echo '<div class="llb-enhanced-only">';
 		printf(
 			'<label><input type="checkbox" name="mzv_lightbox_options[animations_enabled]" value="1" %s> %s</label>',
 			checked( $opts['animations_enabled'], true, false ),
@@ -212,7 +212,7 @@ class MZV_LB_Admin {
 
 	public function field_animation_duration(): void {
 		$opts = MZV_LB_Settings::get_options();
-		echo '<div class="mzv-lb-enhanced-only">';
+		echo '<div class="llb-enhanced-only">';
 		printf(
 			'<input type="number" name="mzv_lightbox_options[animation_duration_ms]" value="%d" min="50" max="1000" step="10" class="small-text"> ms',
 			(int) $opts['animation_duration_ms']
@@ -277,7 +277,7 @@ class MZV_LB_Admin {
 
 		$nonce = wp_create_nonce( 'mzv_lb_dismiss_nonce' );
 		?>
-		<div class="notice notice-warning is-dismissible" id="mzv-lb-conflict-notice">
+		<div class="notice notice-warning is-dismissible" id="llb-conflict-notice">
 			<p>
 				<strong><?php esc_html_e( 'Lightbox:', 'little-lightbox' ); ?></strong>
 				<?php esc_html_e( "WP Recipe Maker's clickable images feature is enabled. This wraps recipe images in links, which prevents This Little Lightbox of Mine from handling them. To let This Little Lightbox of Mine manage recipe images, disable clickable images in WPRM → Settings → Lightbox.", 'little-lightbox' ); ?>
@@ -285,7 +285,7 @@ class MZV_LB_Admin {
 		</div>
 		<script>
 		(function(){
-			var notice = document.getElementById('mzv-lb-conflict-notice');
+			var notice = document.getElementById('llb-conflict-notice');
 			if (!notice) return;
 			notice.addEventListener('click', function(e) {
 				if (!e.target.closest('.notice-dismiss')) return;
