@@ -1,0 +1,227 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  UM_HOST: https://updates.mikezielonka.com
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    outputs:
+      slug: ${{ steps.meta.outputs.slug }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync shared um-updater.php
+        shell: bash
+        # Best-effort: fetches the pinned um-updater ref when a token with
+        # access to the private source repo is available. Falls back to the
+        # already-committed includes/um-updater.php otherwise — the sanity
+        # check below guarantees a valid file is shipped either way.
+        continue-on-error: true
+        run: |
+          bash scripts/sync-um-updater.sh --ref "${UM_UPDATER_REF}" \
+            || echo "::warning::um-updater sync skipped — using committed includes/um-updater.php (set UM_UPDATER_TOKEN secret to enable pinned sync)"
+        env:
+          # Pin for deterministic builds. Bump when um-updater publishes a new tag.
+          UM_UPDATER_REF: v4.0.0
+          # Prefer a scoped PAT for cross-repo access; fall back to default token.
+          GH_TOKEN: ${{ secrets.UM_UPDATER_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Verify um-updater present
+        shell: bash
+        run: |
+          FILE="includes/um-updater.php"
+          if [ ! -s "$FILE" ]; then
+            echo "::error::$FILE is missing or empty"
+            exit 1
+          fi
+          if ! head -n 1 "$FILE" | grep -q "^<?php"; then
+            echo "::error::$FILE is not a valid PHP file"
+            exit 1
+          fi
+          echo "um-updater OK ($(wc -l < "$FILE") lines)"
+
+      - name: Determine plugin metadata
+        id: meta
+        shell: bash
+        run: |
+          SLUG=""
+          REPO_SLUG="$(basename "$GITHUB_REPOSITORY")"
+          if [ -f "${REPO_SLUG}.php" ]; then
+            SLUG="$REPO_SLUG"
+          else
+            PLUGIN_FILE=$(find . -maxdepth 1 -name "*.php" -type f ! -name "uninstall.php" ! -name "render.php" | head -1)
+            if [ -n "$PLUGIN_FILE" ]; then
+              SLUG=$(basename "$PLUGIN_FILE" .php)
+            else
+              SLUG="$REPO_SLUG"
+            fi
+          fi
+
+          if [[ "$GITHUB_REF" =~ refs/tags/v(.+) ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            VERSION="dev"
+          fi
+
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Validate plugin structure
+        run: |
+          SLUG="${{ steps.meta.outputs.slug }}"
+          if [ ! -f "$SLUG.php" ]; then
+            echo "::error::Main plugin file $SLUG.php not found!"
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        if: hashFiles('package.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Build frontend assets
+        if: hashFiles('package.json') != ''
+        run: |
+          npm ci
+          npm run build:prod 2>/dev/null || npm run build 2>/dev/null || npm run prod 2>/dev/null || echo "No build script, skipping"
+
+      - name: Prepare release directory
+        run: |
+          rm -rf release
+          mkdir -p "release/${{ steps.meta.outputs.slug }}"
+
+      - name: Copy plugin files
+        shell: bash
+        run: |
+          set -e
+          SLUG="${{ steps.meta.outputs.slug }}"
+          DEST="release/$SLUG"
+
+          if [ -f ".distignore" ]; then
+            rsync -av --exclude-from='.distignore' --exclude='release/' ./ "$DEST/"
+          else
+            rsync -av \
+              --exclude='.git' --exclude='.github' --exclude='node_modules' \
+              --exclude='vendor' --exclude='tests' --exclude='*.map' \
+              --exclude='*.zip' --exclude='release/' --exclude='composer.*' \
+              --exclude='package*.json' --exclude='phpunit.*' --exclude='.distignore' \
+              ./ "$DEST/"
+          fi
+
+          find "$DEST" -name ".DS_Store" -delete 2>/dev/null || true
+          find "$DEST" -name "Thumbs.db" -delete 2>/dev/null || true
+
+      - name: Validate release package
+        run: |
+          SLUG="${{ steps.meta.outputs.slug }}"
+          [ ! -f "release/$SLUG/$SLUG.php" ] && { echo "::error::Plugin file missing in release!"; exit 1; }
+          echo "✓ Release validated"
+
+      - name: Create ZIP
+        working-directory: release
+        run: |
+          SLUG="${{ steps.meta.outputs.slug }}"
+          zip -r "$SLUG.zip" "$SLUG" -x "*.DS_Store" "*.Thumbs.db"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.slug }}-${{ steps.meta.outputs.version }}.zip
+          path: release/${{ steps.meta.outputs.slug }}.zip
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.meta.outputs.slug }} v${{ steps.meta.outputs.version }}
+          files: release/${{ steps.meta.outputs.slug }}.zip
+          generate_release_notes: true
+          make_latest: true
+
+  publish-update-machine:
+    name: Publish to Update Machine
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download release ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.release.outputs.slug }}-${{ needs.release.outputs.version }}.zip
+          path: /tmp/release
+
+      - name: Rename ZIP with version
+        run: |
+          SLUG="${{ needs.release.outputs.slug }}"
+          VERSION="${{ needs.release.outputs.version }}"
+          mv "/tmp/release/${SLUG}.zip" "/tmp/release/${SLUG}-${VERSION}.zip"
+
+      - name: Extract plugin metadata from PHP header
+        id: php_meta
+        run: |
+          SLUG="${{ needs.release.outputs.slug }}"
+          MAIN_FILE="${SLUG}.php"
+
+          NAME=$(grep -m1 'Plugin Name:' "$MAIN_FILE" | sed 's/.*Plugin Name:\s*//' | sed 's/\s*\*\///' | xargs)
+          DESC=$(grep -m1 'Description:' "$MAIN_FILE" | sed 's/.*Description:\s*//' | sed 's/\s*\*\///' | xargs)
+          REQUIRES=$(grep -m1 'Requires at least:' "$MAIN_FILE" | sed 's/.*Requires at least:\s*//' | sed 's/\s*\*\///' | xargs || echo "6.4")
+          REQUIRES_PHP=$(grep -m1 'Requires PHP:' "$MAIN_FILE" | sed 's/.*Requires PHP:\s*//' | sed 's/\s*\*\///' | xargs || echo "8.1")
+          TESTED=$(grep -m1 'Tested up to:' "$MAIN_FILE" | sed 's/.*Tested up to:\s*//' | sed 's/\s*\*\///' | xargs || echo "6.9")
+
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "description=${DESC}" >> "$GITHUB_OUTPUT"
+          echo "requires=${REQUIRES}" >> "$GITHUB_OUTPUT"
+          echo "requires_php=${REQUIRES_PHP}" >> "$GITHUB_OUTPUT"
+          echo "tested=${TESTED}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Update Machine
+        run: |
+          SLUG="${{ needs.release.outputs.slug }}"
+          VERSION="${{ needs.release.outputs.version }}"
+          ZIP="/tmp/release/${SLUG}-${VERSION}.zip"
+
+          HTTP_STATUS=$(curl -s -o /tmp/um-response.json -w "%{http_code}" \
+            -X POST "${UM_HOST}/api/admin/plugins" \
+            -H "Authorization: Bearer ${UM_ADMIN_TOKEN}" \
+            -F "slug=${SLUG}" \
+            -F "name=${{ steps.php_meta.outputs.name }}" \
+            -F "version=${VERSION}" \
+            -F "requires=${{ steps.php_meta.outputs.requires }}" \
+            -F "requires_php=${{ steps.php_meta.outputs.requires_php }}" \
+            -F "tested=${{ steps.php_meta.outputs.tested }}" \
+            -F "description=${{ steps.php_meta.outputs.description }}" \
+            -F "changelog=See GitHub releases for full changelog." \
+            -F "file=@${ZIP}")
+
+          echo "HTTP Status: ${HTTP_STATUS}"
+          cat /tmp/um-response.json
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "::error::Update Machine upload failed with status ${HTTP_STATUS}"
+            exit 1
+          fi
+
+          echo "✅ Published ${SLUG} v${VERSION} to Update Machine"
+        env:
+          UM_ADMIN_TOKEN: ${{ secrets.UM_ADMIN_TOKEN }}
