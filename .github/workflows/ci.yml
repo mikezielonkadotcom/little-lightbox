@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-package:
+    name: Validate Plugin Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'
+          coverage: none
+          tools: none
+
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync zip unzip
+
+      - name: Validate source
+        shell: bash
+        run: bash scripts/validate-plugin-package.sh
+
+      - name: Build release ZIP dry run
+        shell: bash
+        run: bash scripts/build-plugin-zip.sh
+
+      - name: Validate release ZIP
+        shell: bash
+        run: bash scripts/validate-plugin-package.sh --zip release/little-lightbox.zip
+
+      - name: Upload dry-run ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: little-lightbox-ci-package
+          path: release/little-lightbox.zip
+          retention-days: 7

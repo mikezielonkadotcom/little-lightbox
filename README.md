@@ -17,7 +17,7 @@ Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes. Fast,
 
 ## Installation
 
-1. Download the [latest release](https://github.com/mikezielonkadotcom/lightbox/releases)
+1. Download the [latest release](https://github.com/mikezielonkadotcom/little-lightbox/releases)
 2. Upload to `/wp-content/plugins/little-lightbox/`
 3. Activate in WordPress admin
 4. Done — no configuration needed

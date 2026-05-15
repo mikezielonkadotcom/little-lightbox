@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: This Little Lightbox of Mine
- * Plugin URI:  https://github.com/mikezielonkadotcom/lightbox
+ * Plugin URI:  https://github.com/mikezielonkadotcom/little-lightbox
  * Description: Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes, gallery browsing, captions, swipe, keyboard navigation, and WPRM integration.
  * Version:     2.3.0
  * Author:      Mike Zielonka Ventures
