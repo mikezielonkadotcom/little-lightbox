@@ -105,14 +105,23 @@ if [ -n "$ZIP_PATH" ]; then
     exit 1
   fi
 
-  if ! command -v unzip >/dev/null 2>&1; then
-    echo "::error::unzip is required for ZIP validation" >&2
-    exit 1
-  fi
-
   ZIP_LIST="$(mktemp)"
   trap 'rm -f "$ZIP_LIST"' EXIT
-  unzip -Z1 "$ZIP_PATH" > "$ZIP_LIST"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -Z1 "$ZIP_PATH" > "$ZIP_LIST"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$ZIP_PATH" > "$ZIP_LIST" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    for name in zf.namelist():
+        print(name)
+PY
+  else
+    echo "::error::unzip or python3 is required for ZIP validation" >&2
+    exit 1
+  fi
 
   grep -qx "$SLUG/$SLUG.php" "$ZIP_LIST" || {
     echo "::error::ZIP does not contain $SLUG/$SLUG.php" >&2
@@ -128,6 +137,24 @@ if [ -n "$ZIP_PATH" ]; then
   if grep -Eq "$FORBIDDEN" "$ZIP_LIST"; then
     echo "::error::ZIP contains repository-only files:" >&2
     grep -E "$FORBIDDEN" "$ZIP_LIST" >&2
+    exit 1
+  fi
+
+  UNEXPECTED="$(
+    awk -v slug="$SLUG" '
+      $0 == slug "/" { next }
+      $0 == slug "/" slug ".php" { next }
+      $0 == slug "/readme.txt" { next }
+      $0 == slug "/assets/" { next }
+      $0 ~ "^" slug "/assets/[^/]+\\.(css|js)$" { next }
+      $0 == slug "/includes/" { next }
+      $0 ~ "^" slug "/includes/[^/]+\\.php$" { next }
+      { print }
+    ' "$ZIP_LIST"
+  )"
+  if [ -n "$UNEXPECTED" ]; then
+    echo "::error::ZIP contains unexpected plugin package files:" >&2
+    echo "$UNEXPECTED" >&2
     exit 1
   fi
 fi

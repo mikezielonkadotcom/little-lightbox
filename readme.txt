@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.3.0
+Stable tag: 2.4.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,11 +28,17 @@ This Little Lightbox of Mine automatically wraps `.entry-content` images in a co
 * Excluded CSS classes filter
 * Recipe card image toggle (separate gallery group)
 * WPRM lightbox conflict detection with admin notice
+* Optional ad layering for selected video-player and sticky-footer ad containers (Enhanced)
 * Self-hosted updates via Update Machine v2
 * `.no-lightbox` escape hatch class
 * Body scroll lock, focus trap, full accessibility support
 
 == Changelog ==
+
+= 2.4.0 =
+* New: Added an Enhanced-mode setting to let selected ad containers render above the lightbox while it is open.
+* New: Added configurable ad-layer selectors for video-player and sticky-footer ad wrappers. The setting is off by default.
+* Dev: Added CI package validation and reusable release ZIP build scripts.
 
 = 2.3.0 =
 * Fix: Close, prev, and next buttons now reset native button appearance (`appearance: none`), preventing platform/theme-default button chrome from painting over the SVG icons (manifested as a grey square in place of the close X on some browsers/themes).

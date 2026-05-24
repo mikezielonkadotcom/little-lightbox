@@ -60,6 +60,11 @@ class MZV_LB_Admin {
 		add_settings_field( 'excluded_classes', __( 'Excluded Classes', 'little-lightbox' ), [ $this, 'field_excluded_classes' ], $page, 'mzv_lb_visibility' );
 		add_settings_field( 'recipe_card_lightbox', __( 'Recipe Card Images', 'little-lightbox' ), [ $this, 'field_recipe_card_lightbox' ], $page, 'mzv_lb_visibility' );
 
+		// Section: Ad Layering.
+		add_settings_section( 'mzv_lb_ad_layering', __( 'Ad Layering', 'little-lightbox' ), '__return_false', $page );
+		add_settings_field( 'allow_ads_above_lightbox', __( 'Allow Ads Above Lightbox', 'little-lightbox' ), [ $this, 'field_allow_ads_above_lightbox' ], $page, 'mzv_lb_ad_layering' );
+		add_settings_field( 'ad_layer_selectors', __( 'Ad Selectors', 'little-lightbox' ), [ $this, 'field_ad_layer_selectors' ], $page, 'mzv_lb_ad_layering' );
+
 		// Section: Gallery.
 		add_settings_section( 'mzv_lb_gallery', __( 'Gallery', 'little-lightbox' ), '__return_false', $page );
 		add_settings_field( 'gallery_enabled', __( 'Gallery Browsing', 'little-lightbox' ), [ $this, 'field_gallery_enabled' ], $page, 'mzv_lb_gallery' );
@@ -105,7 +110,7 @@ class MZV_LB_Admin {
 				var isCss = mode && mode.value === 'css';
 				enhanced.forEach(function(el) {
 					el.classList.toggle('is-disabled', isCss);
-					var inputs = el.querySelectorAll('input, select');
+					var inputs = el.querySelectorAll('input, select, textarea');
 					inputs.forEach(function(inp) { inp.disabled = isCss; });
 				});
 			}
@@ -184,6 +189,29 @@ class MZV_LB_Admin {
 			checked( $opts['recipe_card_lightbox'], true, false ),
 			esc_html__( 'Enable lightbox on WPRM recipe card images', 'little-lightbox' )
 		);
+	}
+
+	public function field_allow_ads_above_lightbox(): void {
+		$opts = MZV_LB_Settings::get_options();
+		echo '<div class="llb-enhanced-only">';
+		printf(
+			'<label><input type="checkbox" name="mzv_lightbox_options[allow_ads_above_lightbox]" value="1" %s> %s</label>',
+			checked( $opts['allow_ads_above_lightbox'], true, false ),
+			esc_html__( 'Lift selected ad containers above the lightbox while it is open', 'little-lightbox' )
+		);
+		echo '<p class="description">' . esc_html__( 'Default is off. Available in Enhanced mode.', 'little-lightbox' ) . '</p>';
+		echo '</div>';
+	}
+
+	public function field_ad_layer_selectors(): void {
+		$opts = MZV_LB_Settings::get_options();
+		echo '<div class="llb-enhanced-only">';
+		printf(
+			'<textarea name="mzv_lightbox_options[ad_layer_selectors]" rows="3" class="large-text code" placeholder=".adthrive-video-player, .adthrive-sticky-footer">%s</textarea>',
+			esc_textarea( $opts['ad_layer_selectors'] )
+		);
+		echo '<p class="description">' . esc_html__( 'Comma-separated CSS selectors for ad containers that should remain visible above the lightbox, such as video-player or sticky-footer ad wrappers.', 'little-lightbox' ) . '</p>';
+		echo '</div>';
 	}
 
 	public function field_gallery_enabled(): void {

@@ -3,6 +3,12 @@
 .githooks/
 .claude/
 .openclaw/
+AGENTS.md
+HEARTBEAT.md
+IDENTITY.md
+SOUL.md
+TOOLS.md
+USER.md
 node_modules/
 vendor/
 tests/

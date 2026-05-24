@@ -20,7 +20,7 @@ class MZV_LB_CSS_Mode {
 		$close_svg = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'%3E%3Cline x1='6' y1='6' x2='18' y2='18'/%3E%3Cline x1='18' y1='6' x2='6' y2='18'/%3E%3C/svg%3E";
 
 		return <<<CSS
-/* This Little Lightbox of Mine v2.3.0 — CSS-Only Mode */
+/* This Little Lightbox of Mine v2.4.0 — CSS-Only Mode */
 html:has(input.llb-toggle:checked){overflow:hidden}
 .llb-toggle{position:absolute;opacity:0;pointer-events:none;width:0;height:0}
 .llb-wrap{position:relative;display:inline-block;cursor:zoom-in}
