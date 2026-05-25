@@ -151,7 +151,7 @@ class MZV_LB_Content {
 			$full_src = $this->get_full_size_url( $img );
 
 			if ( 'css' === $mode ) {
-				$markup = MZV_LB_CSS_Mode::build_markup( $id, $img, $full_src, $alt, $doc );
+				$markup = MZV_LB_CSS_Mode::build_markup( $id, $img, $full_src, $alt, $opts, $doc );
 			} else {
 				$markup = $this->build_enhanced_markup( $img, $full_src, $group, $opts, $doc );
 			}
@@ -173,7 +173,7 @@ class MZV_LB_Content {
 	 */
 	private function build_enhanced_markup( DOMElement $img, string $full_src, string $group, array $opts, DOMDocument $doc ): DOMElement {
 		$wrap = $doc->createElement( 'span' );
-		$wrap->setAttribute( 'class', 'llb-wrap' );
+		$wrap->setAttribute( 'class', $this->get_wrap_classes( $opts ) );
 		$wrap->setAttribute( 'data-llb-src', $full_src );
 		$wrap->setAttribute( 'data-llb-group', $group );
 		$wrap->setAttribute( 'role', 'button' );
@@ -210,6 +210,24 @@ class MZV_LB_Content {
 		$wrap->appendChild( $mobile );
 
 		return $wrap;
+	}
+
+	/**
+	 * Build frontend classes for trigger icon presentation options.
+	 */
+	private function get_wrap_classes( array $opts ): string {
+		$classes = [ 'llb-wrap' ];
+
+		if ( ! empty( $opts['desktop_icon_always_visible'] ) ) {
+			$classes[] = 'llb-icon-always';
+		}
+
+		$size = $opts['trigger_icon_size'] ?? 'normal';
+		if ( in_array( $size, [ 'jumbo', 'super' ], true ) ) {
+			$classes[] = 'llb-icon-' . $size;
+		}
+
+		return implode( ' ', $classes );
 	}
 
 	/**

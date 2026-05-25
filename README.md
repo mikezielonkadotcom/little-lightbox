@@ -9,7 +9,7 @@ Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes. Fast,
 - **Auto-wraps images** in `the_content` with smart exclusions
 - **Skips**: WPRM recipe card images, images with class `no-lightbox`, images already wrapped in links
 - **Full-size images** lazy-loaded only when lightbox opens
-- **Hover overlay** with magnifier icon (desktop) / always-visible zoom hint (mobile)
+- **Configurable trigger icon** with always-visible desktop corner mode and normal/jumbo/super sizing
 - **Optional ad layering** for selected video-player and sticky-footer ad containers in Enhanced mode
 - **Body scroll lock** via `html:has()` — no JS needed
 - **Accessible**: `role="dialog"`, `aria-modal`, labeled close button, focus rings

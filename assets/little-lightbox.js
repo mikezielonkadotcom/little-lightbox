@@ -1,5 +1,5 @@
 /**
- * This Little Lightbox of Mine v2.4.0 — Enhanced Mode JS
+ * This Little Lightbox of Mine v2.5.0 — Enhanced Mode JS
  *
  * Vanilla JS: modal, gallery, swipe, keyboard, animation, focus trap.
  * No dependencies. ES2017+.

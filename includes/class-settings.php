@@ -16,18 +16,20 @@ class MZV_LB_Settings {
 	 */
 	public static function defaults(): array {
 		return [
-			'lightbox_mode'           => 'enhanced',
-			'caption_source'          => 'alt',
-			'wprm_jump_enabled'       => true,
-			'min_image_width'         => 0,
-			'excluded_classes'        => '',
-			'recipe_card_lightbox'    => true,
-			'allow_ads_above_lightbox' => false,
-			'ad_layer_selectors'      => '.adthrive-video-player, .adthrive-sticky-footer, .adthrive-sticky-outstream, .mediavine-video__container, .mediavine-sticky-footer',
-			'gallery_enabled'         => true,
-			'animations_enabled'      => true,
-			'animation_duration_ms'   => 200,
-			'wprm_conflict_dismissed' => false,
+			'lightbox_mode'                => 'enhanced',
+			'caption_source'               => 'alt',
+			'wprm_jump_enabled'            => true,
+			'min_image_width'              => 0,
+			'excluded_classes'             => '',
+			'recipe_card_lightbox'         => true,
+			'desktop_icon_always_visible'  => true,
+			'trigger_icon_size'            => 'normal',
+			'allow_ads_above_lightbox'     => false,
+			'ad_layer_selectors'           => '.adthrive-video-player, .adthrive-sticky-footer, .adthrive-sticky-outstream, .mediavine-video__container, .mediavine-sticky-footer',
+			'gallery_enabled'              => true,
+			'animations_enabled'           => true,
+			'animation_duration_ms'        => 200,
+			'wprm_conflict_dismissed'      => false,
 		];
 	}
 
@@ -96,10 +98,13 @@ class MZV_LB_Settings {
 			$clean['caption_source'] = $existing['caption_source'];
 		}
 
-		$clean['wprm_jump_enabled']    = ! empty( $input['wprm_jump_enabled'] );
-		$clean['min_image_width']      = max( 0, (int) ( $input['min_image_width'] ?? 0 ) );
-		$clean['excluded_classes']     = sanitize_text_field( $input['excluded_classes'] ?? '' );
-		$clean['recipe_card_lightbox'] = ! empty( $input['recipe_card_lightbox'] );
+		$clean['wprm_jump_enabled']            = ! empty( $input['wprm_jump_enabled'] );
+		$clean['min_image_width']              = max( 0, (int) ( $input['min_image_width'] ?? 0 ) );
+		$clean['excluded_classes']             = sanitize_text_field( $input['excluded_classes'] ?? '' );
+		$clean['recipe_card_lightbox']         = ! empty( $input['recipe_card_lightbox'] );
+		$clean['desktop_icon_always_visible']  = ! empty( $input['desktop_icon_always_visible'] );
+		$clean['trigger_icon_size']            = in_array( ( $input['trigger_icon_size'] ?? '' ), [ 'normal', 'jumbo', 'super' ], true )
+			? $input['trigger_icon_size'] : 'normal';
 
 		// Enhanced-only controls are disabled in CSS mode and therefore omitted from
 		// the Settings API payload. Preserve saved values instead of resetting them.

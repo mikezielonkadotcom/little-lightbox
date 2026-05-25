@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.4.0
+Stable tag: 2.5.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -27,6 +27,8 @@ This Little Lightbox of Mine automatically wraps `.entry-content` images in a co
 * Minimum image width filter
 * Excluded CSS classes filter
 * Recipe card image toggle (separate gallery group)
+* Desktop trigger icon can stay visible in the image corner
+* Trigger icon size controls: normal, jumbo (2x), and super size (3x)
 * WPRM lightbox conflict detection with admin notice
 * Optional ad layering for selected video-player and sticky-footer ad containers (Enhanced)
 * Self-hosted updates via Update Machine v2
@@ -34,6 +36,10 @@ This Little Lightbox of Mine automatically wraps `.entry-content` images in a co
 * Body scroll lock, focus trap, full accessibility support
 
 == Changelog ==
+
+= 2.5.0 =
+* New: Added a desktop trigger icon setting that keeps the magnifier visible in the image corner instead of only showing it on hover.
+* New: Added trigger icon size options: normal, jumbo (2x), and super size (3x).
 
 = 2.4.0 =
 * New: Added an Enhanced-mode setting to let selected ad containers render above the lightbox while it is open.

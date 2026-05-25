@@ -59,6 +59,8 @@ class MZV_LB_Admin {
 		add_settings_field( 'min_image_width', __( 'Min Image Width', 'little-lightbox' ), [ $this, 'field_min_image_width' ], $page, 'mzv_lb_visibility' );
 		add_settings_field( 'excluded_classes', __( 'Excluded Classes', 'little-lightbox' ), [ $this, 'field_excluded_classes' ], $page, 'mzv_lb_visibility' );
 		add_settings_field( 'recipe_card_lightbox', __( 'Recipe Card Images', 'little-lightbox' ), [ $this, 'field_recipe_card_lightbox' ], $page, 'mzv_lb_visibility' );
+		add_settings_field( 'desktop_icon_always_visible', __( 'Desktop Icon', 'little-lightbox' ), [ $this, 'field_desktop_icon_always_visible' ], $page, 'mzv_lb_visibility' );
+		add_settings_field( 'trigger_icon_size', __( 'Icon Size', 'little-lightbox' ), [ $this, 'field_trigger_icon_size' ], $page, 'mzv_lb_visibility' );
 
 		// Section: Ad Layering.
 		add_settings_section( 'mzv_lb_ad_layering', __( 'Ad Layering', 'little-lightbox' ), '__return_false', $page );
@@ -189,6 +191,38 @@ class MZV_LB_Admin {
 			checked( $opts['recipe_card_lightbox'], true, false ),
 			esc_html__( 'Enable lightbox on WPRM recipe card images', 'little-lightbox' )
 		);
+	}
+
+	public function field_desktop_icon_always_visible(): void {
+		$opts = MZV_LB_Settings::get_options();
+		printf(
+			'<label><input type="checkbox" name="mzv_lightbox_options[desktop_icon_always_visible]" value="1" %s> %s</label>',
+			checked( $opts['desktop_icon_always_visible'], true, false ),
+			esc_html__( 'Always show the trigger icon in the image corner on desktop', 'little-lightbox' )
+		);
+		echo '<p class="description">' . esc_html__( 'When disabled, desktop keeps the original hover-only overlay.', 'little-lightbox' ) . '</p>';
+	}
+
+	public function field_trigger_icon_size(): void {
+		$opts    = MZV_LB_Settings::get_options();
+		$val     = $opts['trigger_icon_size'];
+		$options = [
+			'normal' => __( 'Normal', 'little-lightbox' ),
+			'jumbo'  => __( 'Jumbo (2x)', 'little-lightbox' ),
+			'super'  => __( 'Super Size (3x)', 'little-lightbox' ),
+		];
+
+		echo '<fieldset>';
+		foreach ( $options as $key => $label ) {
+			printf(
+				'<label><input type="radio" name="mzv_lightbox_options[trigger_icon_size]" value="%s" %s> %s</label><br>',
+				esc_attr( $key ),
+				checked( $val, $key, false ),
+				esc_html( $label )
+			);
+		}
+		echo '<p class="description">' . esc_html__( 'Controls the corner trigger icon size in both Enhanced and CSS-Only modes.', 'little-lightbox' ) . '</p>';
+		echo '</fieldset>';
 	}
 
 	public function field_allow_ads_above_lightbox(): void {
