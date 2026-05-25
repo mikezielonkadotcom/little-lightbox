@@ -41,8 +41,8 @@ add_action( 'init', function() {
 		\UM\PluginUpdater\register( [
 			'file'       => MZV_LB_FILE,
 			'slug'       => 'little-lightbox',
-			'update_url' => 'https://updates.mikezielonka.com/little-lightbox/update.json',
-			'server'     => 'https://updates.mikezielonka.com',
+			'update_url' => 'https://updatemachine.com/little-lightbox/update.json',
+			'server'     => 'https://updatemachine.com',
 		] );
 	}
 } );

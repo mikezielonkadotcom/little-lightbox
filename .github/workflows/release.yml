@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 env:
-  UM_HOST: https://updates.mikezielonka.com
+  UM_HOST: https://updatemachine.com
 
 jobs:
   release:
