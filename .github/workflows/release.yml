@@ -20,7 +20,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -81,16 +81,12 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Validate plugin structure
-        run: |
-          SLUG="${{ steps.meta.outputs.slug }}"
-          if [ ! -f "$SLUG.php" ]; then
-            echo "::error::Main plugin file $SLUG.php not found!"
-            exit 1
-          fi
+        shell: bash
+        run: bash scripts/validate-plugin-package.sh
 
       - name: Setup Node.js
         if: hashFiles('package.json') != ''
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -101,46 +97,19 @@ jobs:
           npm ci
           npm run build:prod 2>/dev/null || npm run build 2>/dev/null || npm run prod 2>/dev/null || echo "No build script, skipping"
 
-      - name: Prepare release directory
-        run: |
-          rm -rf release
-          mkdir -p "release/${{ steps.meta.outputs.slug }}"
-
-      - name: Copy plugin files
+      - name: Build release ZIP
         shell: bash
-        run: |
-          set -e
-          SLUG="${{ steps.meta.outputs.slug }}"
-          DEST="release/$SLUG"
-
-          if [ -f ".distignore" ]; then
-            rsync -av --exclude-from='.distignore' --exclude='release/' ./ "$DEST/"
-          else
-            rsync -av \
-              --exclude='.git' --exclude='.github' --exclude='node_modules' \
-              --exclude='vendor' --exclude='tests' --exclude='*.map' \
-              --exclude='*.zip' --exclude='release/' --exclude='composer.*' \
-              --exclude='package*.json' --exclude='phpunit.*' --exclude='.distignore' \
-              ./ "$DEST/"
-          fi
-
-          find "$DEST" -name ".DS_Store" -delete 2>/dev/null || true
-          find "$DEST" -name "Thumbs.db" -delete 2>/dev/null || true
+        run: bash scripts/build-plugin-zip.sh
+        env:
+          PLUGIN_SLUG: ${{ steps.meta.outputs.slug }}
+          PLUGIN_VERSION: ${{ steps.meta.outputs.version }}
 
       - name: Validate release package
-        run: |
-          SLUG="${{ steps.meta.outputs.slug }}"
-          [ ! -f "release/$SLUG/$SLUG.php" ] && { echo "::error::Plugin file missing in release!"; exit 1; }
-          echo "✓ Release validated"
-
-      - name: Create ZIP
-        working-directory: release
-        run: |
-          SLUG="${{ steps.meta.outputs.slug }}"
-          zip -r "$SLUG.zip" "$SLUG" -x "*.DS_Store" "*.Thumbs.db"
+        shell: bash
+        run: bash scripts/validate-plugin-package.sh --zip "release/${{ steps.meta.outputs.slug }}.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ steps.meta.outputs.slug }}-${{ steps.meta.outputs.version }}.zip
           path: release/${{ steps.meta.outputs.slug }}.zip
@@ -148,7 +117,7 @@ jobs:
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ steps.meta.outputs.slug }} v${{ steps.meta.outputs.version }}
@@ -163,10 +132,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Download release ZIP
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ needs.release.outputs.slug }}-${{ needs.release.outputs.version }}.zip
           path: /tmp/release

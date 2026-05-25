@@ -22,6 +22,8 @@ class MZV_LB_Settings {
 			'min_image_width'         => 0,
 			'excluded_classes'        => '',
 			'recipe_card_lightbox'    => true,
+			'allow_ads_above_lightbox' => false,
+			'ad_layer_selectors'      => '.adthrive-video-player, .adthrive-sticky-footer, .adthrive-sticky-outstream, .mediavine-video__container, .mediavine-sticky-footer',
 			'gallery_enabled'         => true,
 			'animations_enabled'      => true,
 			'animation_duration_ms'   => 200,
@@ -101,6 +103,14 @@ class MZV_LB_Settings {
 
 		// Enhanced-only controls are disabled in CSS mode and therefore omitted from
 		// the Settings API payload. Preserve saved values instead of resetting them.
+		$clean['allow_ads_above_lightbox'] = ( $is_css_save && ! array_key_exists( 'allow_ads_above_lightbox', $input ) )
+			? (bool) $existing['allow_ads_above_lightbox']
+			: ! empty( $input['allow_ads_above_lightbox'] );
+
+		$clean['ad_layer_selectors'] = ( $is_css_save && ! array_key_exists( 'ad_layer_selectors', $input ) )
+			? (string) $existing['ad_layer_selectors']
+			: sanitize_text_field( $input['ad_layer_selectors'] ?? '' );
+
 		$clean['gallery_enabled'] = ( $is_css_save && ! array_key_exists( 'gallery_enabled', $input ) )
 			? (bool) $existing['gallery_enabled']
 			: ! empty( $input['gallery_enabled'] );

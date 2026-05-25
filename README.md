@@ -10,6 +10,7 @@ Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes. Fast,
 - **Skips**: WPRM recipe card images, images with class `no-lightbox`, images already wrapped in links
 - **Full-size images** lazy-loaded only when lightbox opens
 - **Hover overlay** with magnifier icon (desktop) / always-visible zoom hint (mobile)
+- **Optional ad layering** for selected video-player and sticky-footer ad containers in Enhanced mode
 - **Body scroll lock** via `html:has()` — no JS needed
 - **Accessible**: `role="dialog"`, `aria-modal`, labeled close button, focus rings
 - **`prefers-reduced-motion`** support
@@ -17,7 +18,7 @@ Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes. Fast,
 
 ## Installation
 
-1. Download the [latest release](https://github.com/mikezielonkadotcom/lightbox/releases)
+1. Download the [latest release](https://github.com/mikezielonkadotcom/little-lightbox/releases)
 2. Upload to `/wp-content/plugins/little-lightbox/`
 3. Activate in WordPress admin
 4. Done — no configuration needed
@@ -25,6 +26,10 @@ Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes. Fast,
 ## Excluding Images
 
 Add the CSS class `no-lightbox` to any image you want to exclude.
+
+## Ad Layering
+
+Enhanced mode can lift selected ad containers above the lightbox while it is open. The setting is off by default. Enable it under Settings → This Little Lightbox of Mine and adjust the comma-separated selector list for the site's video-player and sticky-footer ad wrappers.
 
 ## Requirements
 

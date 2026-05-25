@@ -1,5 +1,5 @@
 /**
- * This Little Lightbox of Mine v2.3.0 — Enhanced Mode JS
+ * This Little Lightbox of Mine v2.4.0 — Enhanced Mode JS
  *
  * Vanilla JS: modal, gallery, swipe, keyboard, animation, focus trap.
  * No dependencies. ES2017+.
@@ -16,6 +16,7 @@
 	var pendingJump = false;
 	var isOpen = false;
 	var groups = { content: [], recipe: [] };
+	var liftedAdElements = [];
 
 	// Swipe tracking.
 	var touchStartX = 0;
@@ -32,6 +33,70 @@
 
 	function getDuration() {
 		return shouldAnimate() ? (config.animationDurationMs || 200) : 0;
+	}
+
+	function getAdLayerSelector() {
+		if (!config.allowAdsAboveLightbox || !config.adLayerSelectors) {
+			return '';
+		}
+
+		return String(config.adLayerSelectors)
+			.split(',')
+			.map(function (selector) { return selector.trim(); })
+			.filter(Boolean)
+			.join(',');
+	}
+
+	function applyAdLayering() {
+		var selector = getAdLayerSelector();
+		if (!selector) return;
+
+		resetAdLayering();
+
+		var nodes;
+		try {
+			nodes = document.querySelectorAll(selector);
+		} catch (e) {
+			if (window.console && typeof window.console.warn === 'function') {
+				window.console.warn('Little Lightbox: invalid ad selector list.', e);
+			}
+			return;
+		}
+
+		nodes.forEach(function (el) {
+			if (!el || el === modal || modal.contains(el)) return;
+
+			var computed = window.getComputedStyle(el);
+			liftedAdElements.push({
+				el: el,
+				position: el.style.position,
+				zIndex: el.style.zIndex,
+				pointerEvents: el.style.pointerEvents
+			});
+
+			if (computed.position === 'static') {
+				el.style.position = 'relative';
+			}
+			el.style.zIndex = '2147483647';
+			el.style.pointerEvents = 'auto';
+			el.setAttribute('data-llb-ad-layer', '1');
+		});
+
+		if (liftedAdElements.length) {
+			document.documentElement.classList.add('llb-ads-above-lightbox');
+		}
+	}
+
+	function resetAdLayering() {
+		liftedAdElements.forEach(function (entry) {
+			if (!entry.el) return;
+			entry.el.style.position = entry.position;
+			entry.el.style.zIndex = entry.zIndex;
+			entry.el.style.pointerEvents = entry.pointerEvents;
+			entry.el.removeAttribute('data-llb-ad-layer');
+		});
+		liftedAdElements = [];
+		document.documentElement.classList.remove('llb-ads-above-lightbox');
 	}
 
 	function trackLightboxOpen(wrapEl) {
@@ -190,6 +255,7 @@
 
 		// Lock body scroll.
 		document.documentElement.classList.add('llb-open');
+		applyAdLayering();
 
 		// Focus close button.
 		modalClose.focus();
@@ -241,6 +307,7 @@
 
 		// Restore scroll.
 		document.documentElement.classList.remove('llb-open');
+		resetAdLayering();
 
 		// Clear image src.
 		modalImg.src = '';

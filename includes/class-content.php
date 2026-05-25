@@ -65,13 +65,15 @@ class MZV_LB_Content {
 		);
 
 		$config = [
-			'captionSource'      => $opts['caption_source'],
-			'galleryEnabled'     => (bool) $opts['gallery_enabled'],
-			'animationsEnabled'  => (bool) $opts['animations_enabled'],
-			'animationDurationMs' => (int) $opts['animation_duration_ms'],
-			'wprmJumpEnabled'    => (bool) $opts['wprm_jump_enabled'],
-			'recipeCardSelector' => '[id^="wprm-recipe-container-"], .wprm-recipe-container',
-			'i18n'               => [
+			'captionSource'          => $opts['caption_source'],
+			'galleryEnabled'         => (bool) $opts['gallery_enabled'],
+			'animationsEnabled'      => (bool) $opts['animations_enabled'],
+			'animationDurationMs'    => (int) $opts['animation_duration_ms'],
+			'wprmJumpEnabled'        => (bool) $opts['wprm_jump_enabled'],
+			'allowAdsAboveLightbox'  => (bool) $opts['allow_ads_above_lightbox'],
+			'adLayerSelectors'       => (string) $opts['ad_layer_selectors'],
+			'recipeCardSelector'     => '[id^="wprm-recipe-container-"], .wprm-recipe-container',
+			'i18n'                   => [
 				'close'        => __( 'Close image', 'little-lightbox' ),
 				'prev'         => __( 'Previous image', 'little-lightbox' ),
 				'next'         => __( 'Next image', 'little-lightbox' ),
