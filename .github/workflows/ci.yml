@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
@@ -37,7 +37,7 @@ jobs:
         run: bash scripts/validate-plugin-package.sh --zip release/little-lightbox.zip
 
       - name: Upload dry-run ZIP
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: little-lightbox-ci-package
           path: release/little-lightbox.zip
