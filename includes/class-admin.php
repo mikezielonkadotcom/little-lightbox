@@ -79,6 +79,10 @@ class MZV_LB_Admin {
 		// Section: WPRM.
 		add_settings_section( 'mzv_lb_wprm', __( 'WPRM Integration', 'little-lightbox' ), '__return_false', $page );
 		add_settings_field( 'wprm_jump_enabled', __( 'Jump to Recipe', 'little-lightbox' ), [ $this, 'field_wprm_jump' ], $page, 'mzv_lb_wprm' );
+
+		// Section: Privacy.
+		add_settings_section( 'mzv_lb_privacy', __( 'Privacy', 'little-lightbox' ), '__return_false', $page );
+		add_settings_field( 'um_telemetry_opt_out', __( 'Update Telemetry', 'little-lightbox' ), [ $this, 'field_update_telemetry' ], $page, 'mzv_lb_privacy' );
 	}
 
 	/**
@@ -164,6 +168,17 @@ class MZV_LB_Admin {
 		}
 		echo '<p class="description">' . esc_html__( 'Available in Enhanced mode.', 'little-lightbox' ) . '</p>';
 		echo '</fieldset>';
+	}
+
+	public function field_update_telemetry(): void {
+		$updater = $GLOBALS['little_lightbox_updater'] ?? null;
+
+		if ( $updater && method_exists( $updater, 'telemetry_opt_out' ) ) {
+			$updater->telemetry_opt_out()->render_field();
+			return;
+		}
+
+		echo '<p class="description">' . esc_html__( 'Update telemetry controls are unavailable until the bundled updater finishes loading.', 'little-lightbox' ) . '</p>';
 	}
 
 	public function field_min_image_width(): void {
