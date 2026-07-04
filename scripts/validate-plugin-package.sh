@@ -144,6 +144,7 @@ PY
     awk -v slug="$SLUG" '
       $0 == slug "/" { next }
       $0 == slug "/" slug ".php" { next }
+      $0 == slug "/uninstall.php" { next }
       $0 == slug "/readme.txt" { next }
       $0 == slug "/assets/" { next }
       $0 ~ "^" slug "/assets/[^/]+\\.(css|js)$" { next }
