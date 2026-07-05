@@ -38,7 +38,7 @@ add_action( 'init', function() {
 	$admin->hooks();
 
 	if ( is_admin() ) {
-		\UM\PluginUpdater\register( [
+		$GLOBALS['little_lightbox_updater'] = \UM\PluginUpdater\register( [
 			'file'       => MZV_LB_FILE,
 			'slug'       => 'little-lightbox',
 			'update_url' => 'https://updatemachine.com/little-lightbox/update.json',
