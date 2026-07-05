@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.5.0
+Stable tag: 2.6.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -52,6 +52,10 @@ That's the complete list. No admin email (removed in um-updater v4.1.0 because t
 Site owners can disable the telemetry payload from the plugin settings screen. Update checks still happen, but the request body is empty; the update server sees only what any HTTP request carries, plus the auth headers needed to serve the manifest.
 
 == Changelog ==
+
+= 2.6.0 =
+* Dev: Updated the bundled Update Machine updater SDK to v4.4.0.
+* Dev: Added telemetry opt-out cleanup on uninstall and package validation coverage for `uninstall.php`.
 
 = 2.5.0 =
 * New: Added a desktop trigger icon setting that keeps the magnifier visible in the image corner instead of only showing it on hover.
