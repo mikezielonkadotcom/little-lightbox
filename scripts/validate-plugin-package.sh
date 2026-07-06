@@ -58,10 +58,16 @@ fi
 
 PLUGIN_NAME="$(grep -m1 '^[[:space:]]*\* Plugin Name:' "$MAIN_FILE" | sed 's/.*Plugin Name:[[:space:]]*//' | xargs)"
 PLUGIN_VERSION="$(grep -m1 '^[[:space:]]*\* Version:' "$MAIN_FILE" | sed 's/.*Version:[[:space:]]*//' | xargs)"
+REQUIRES_PHP="$(grep -m1 '^[[:space:]]*\* Requires PHP:' "$MAIN_FILE" | sed 's/.*Requires PHP:[[:space:]]*//' | xargs)"
 TEXT_DOMAIN="$(grep -m1 '^[[:space:]]*\* Text Domain:' "$MAIN_FILE" | sed 's/.*Text Domain:[[:space:]]*//' | xargs)"
 
 if [ -z "$PLUGIN_NAME" ] || [ -z "$PLUGIN_VERSION" ]; then
   echo "::error::$MAIN_FILE must include Plugin Name and Version headers" >&2
+  exit 1
+fi
+
+if [ -z "$REQUIRES_PHP" ]; then
+  echo "::error::$MAIN_FILE must include a non-empty Requires PHP header" >&2
   exit 1
 fi
 

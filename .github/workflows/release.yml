@@ -169,6 +169,12 @@ jobs:
           SLUG="${{ needs.release.outputs.slug }}"
           VERSION="${{ needs.release.outputs.version }}"
           ZIP="/tmp/release/${SLUG}-${VERSION}.zip"
+          SHA256="$(sha256sum "$ZIP" | awk '{print $1}')"
+
+          if [ -z "$SHA256" ]; then
+            echo "::error::Could not compute sha256 for ${ZIP}"
+            exit 1
+          fi
 
           HTTP_STATUS=$(curl -s -o /tmp/um-response.json -w "%{http_code}" \
             -X POST "${UM_HOST}/api/admin/plugins" \
@@ -181,6 +187,7 @@ jobs:
             -F "tested=${{ steps.php_meta.outputs.tested }}" \
             -F "description=${{ steps.php_meta.outputs.description }}" \
             -F "changelog=See GitHub releases for full changelog." \
+            -F "sha256=${SHA256}" \
             -F "file=@${ZIP}")
 
           echo "HTTP Status: ${HTTP_STATUS}"
