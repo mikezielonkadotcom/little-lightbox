@@ -36,7 +36,7 @@ jobs:
             || echo "::warning::um-updater sync skipped — using committed includes/um-updater.php (set UM_UPDATER_TOKEN secret to enable pinned sync)"
         env:
           # Pin for deterministic builds. Bump when um-updater publishes a new tag.
-          UM_UPDATER_REF: v4.4.0
+          UM_UPDATER_REF: v4.4.1
           # Prefer a scoped PAT for cross-repo access; fall back to default token.
           GH_TOKEN: ${{ secrets.UM_UPDATER_TOKEN || secrets.GITHUB_TOKEN }}
 
