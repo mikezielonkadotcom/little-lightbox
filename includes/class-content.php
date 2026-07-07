@@ -1,6 +1,6 @@
 <?php
 /**
- * MZV Lightbox Content Filter — DOM parsing + image wrapping for both modes.
+ * This Little Lightbox of Mine Content Filter — DOM parsing + image wrapping for both modes.
  *
  * @package MZV_Lightbox
  */
@@ -42,46 +42,48 @@ class MZV_LB_Content {
 
 		if ( 'css' === $opts['lightbox_mode'] ) {
 			// CSS-Only mode: inline styles, zero JS.
-			wp_register_style( 'mzv-lightbox-base', false );
-			wp_enqueue_style( 'mzv-lightbox-base' );
-			wp_add_inline_style( 'mzv-lightbox-base', MZV_LB_CSS_Mode::get_inline_css() );
+			wp_register_style( 'little-lightbox-base', false );
+			wp_enqueue_style( 'little-lightbox-base' );
+			wp_add_inline_style( 'little-lightbox-base', MZV_LB_CSS_Mode::get_inline_css() );
 			return;
 		}
 
 		// Enhanced mode: linked CSS + JS.
 		wp_enqueue_style(
-			'mzv-lightbox',
-			MZV_LB_URL . 'assets/mzv-lightbox.css',
+			'little-lightbox',
+			MZV_LB_URL . 'assets/little-lightbox.css',
 			[],
 			MZV_LB_VERSION
 		);
 
 		wp_enqueue_script(
-			'mzv-lightbox',
-			MZV_LB_URL . 'assets/mzv-lightbox.js',
+			'little-lightbox',
+			MZV_LB_URL . 'assets/little-lightbox.js',
 			[],
 			MZV_LB_VERSION,
 			true
 		);
 
 		$config = [
-			'captionSource'      => $opts['caption_source'],
-			'galleryEnabled'     => (bool) $opts['gallery_enabled'],
-			'animationsEnabled'  => (bool) $opts['animations_enabled'],
-			'animationDurationMs' => (int) $opts['animation_duration_ms'],
-			'wprmJumpEnabled'    => (bool) $opts['wprm_jump_enabled'],
-			'recipeCardSelector' => '.wprm-recipe-container',
-			'i18n'               => [
-				'close'        => __( 'Close image', 'mzv-lightbox' ),
-				'prev'         => __( 'Previous image', 'mzv-lightbox' ),
-				'next'         => __( 'Next image', 'mzv-lightbox' ),
-				'counter'      => /* translators: %1$d current image, %2$d total */ __( '%1$d of %2$d', 'mzv-lightbox' ),
-				'jumpToRecipe' => __( 'Jump to Recipe ↓', 'mzv-lightbox' ),
-				'openImage'    => __( 'Open image in lightbox', 'mzv-lightbox' ),
+			'captionSource'          => $opts['caption_source'],
+			'galleryEnabled'         => (bool) $opts['gallery_enabled'],
+			'animationsEnabled'      => (bool) $opts['animations_enabled'],
+			'animationDurationMs'    => (int) $opts['animation_duration_ms'],
+			'wprmJumpEnabled'        => (bool) $opts['wprm_jump_enabled'],
+			'allowAdsAboveLightbox'  => (bool) $opts['allow_ads_above_lightbox'],
+			'adLayerSelectors'       => (string) $opts['ad_layer_selectors'],
+			'recipeCardSelector'     => '[id^="wprm-recipe-container-"], .wprm-recipe-container',
+			'i18n'                   => [
+				'close'        => __( 'Close image', 'little-lightbox' ),
+				'prev'         => __( 'Previous image', 'little-lightbox' ),
+				'next'         => __( 'Next image', 'little-lightbox' ),
+				'counter'      => /* translators: %1$d current image, %2$d total */ __( '%1$d of %2$d', 'little-lightbox' ),
+				'jumpToRecipe' => __( 'Jump to Recipe ↓', 'little-lightbox' ),
+				'openImage'    => __( 'Open image in lightbox', 'little-lightbox' ),
 			],
 		];
 
-		wp_localize_script( 'mzv-lightbox', 'mzvLbConfig', $config );
+		wp_localize_script( 'little-lightbox', 'llbConfig', $config );
 	}
 
 	/**
@@ -144,13 +146,13 @@ class MZV_LB_Content {
 			$counter++;
 			$img      = $item['img'];
 			$group    = $item['group'];
-			$id       = 'mzv-lb-' . $counter;
+			$id       = 'llb-' . $counter;
 			$alt      = $img->getAttribute( 'alt' );
 			$full_src = $this->get_full_size_url( $img );
 
 			if ( 'css' === $mode ) {
-				$has_jump_css = $opts['wprm_jump_enabled'] && $this->current_post_has_recipe();
-				$markup       = MZV_LB_CSS_Mode::build_markup( $id, $img, $full_src, $alt, $doc, (bool) $has_jump_css );
+				$has_jump_css = 'recipe' !== $group && $opts['wprm_jump_enabled'] && $this->current_post_has_recipe();
+				$markup       = MZV_LB_CSS_Mode::build_markup( $id, $img, $full_src, $alt, $opts, $doc, (bool) $has_jump_css );
 			} else {
 				$markup = $this->build_enhanced_markup( $img, $full_src, $group, $opts, $doc );
 			}
@@ -172,23 +174,25 @@ class MZV_LB_Content {
 	 */
 	private function build_enhanced_markup( DOMElement $img, string $full_src, string $group, array $opts, DOMDocument $doc ): DOMElement {
 		$wrap = $doc->createElement( 'span' );
-		$wrap->setAttribute( 'class', 'mzv-lb-wrap' );
-		$wrap->setAttribute( 'data-mzv-lb-src', $full_src );
-		$wrap->setAttribute( 'data-mzv-lb-group', $group );
+		$wrap->setAttribute( 'class', $this->get_wrap_classes( $opts ) );
+		$wrap->setAttribute( 'data-llb-src', $full_src );
+		$wrap->setAttribute( 'data-llb-group', $group );
 		$wrap->setAttribute( 'role', 'button' );
 		$wrap->setAttribute( 'tabindex', '0' );
-		$wrap->setAttribute( 'aria-label', __( 'Open image in lightbox', 'mzv-lightbox' ) );
+		$wrap->setAttribute( 'aria-label', __( 'Open image in lightbox', 'little-lightbox' ) );
 
 		// Caption.
 		$caption = $this->get_caption_value( $img, $opts );
-		$wrap->setAttribute( 'data-mzv-lb-caption', $caption );
+		$wrap->setAttribute( 'data-llb-caption', $caption );
 
-		// WPRM jump.
+		// WPRM jump hint. JS performs the final DOM-based check so the link only
+		// appears when the page has a rendered recipe card and the active image is
+		// outside that card.
 		$has_jump = '0';
-		if ( $opts['wprm_jump_enabled'] && $this->current_post_has_recipe() ) {
+		if ( 'recipe' !== $group && $opts['wprm_jump_enabled'] && $this->current_post_has_recipe() ) {
 			$has_jump = '1';
 		}
-		$wrap->setAttribute( 'data-mzv-lb-has-jump', $has_jump );
+		$wrap->setAttribute( 'data-llb-has-jump', $has_jump );
 
 		// Clone original image.
 		$img_clone = $img->cloneNode( true );
@@ -196,17 +200,35 @@ class MZV_LB_Content {
 
 		// Hover overlay.
 		$hover = $doc->createElement( 'span' );
-		$hover->setAttribute( 'class', 'mzv-lb-hover' );
+		$hover->setAttribute( 'class', 'llb-hover' );
 		$hover->setAttribute( 'aria-hidden', 'true' );
 		$wrap->appendChild( $hover );
 
 		// Mobile hint.
 		$mobile = $doc->createElement( 'span' );
-		$mobile->setAttribute( 'class', 'mzv-lb-mobile-hint' );
+		$mobile->setAttribute( 'class', 'llb-mobile-hint' );
 		$mobile->setAttribute( 'aria-hidden', 'true' );
 		$wrap->appendChild( $mobile );
 
 		return $wrap;
+	}
+
+	/**
+	 * Build frontend classes for trigger icon presentation options.
+	 */
+	private function get_wrap_classes( array $opts ): string {
+		$classes = [ 'llb-wrap' ];
+
+		if ( ! empty( $opts['desktop_icon_always_visible'] ) ) {
+			$classes[] = 'llb-icon-always';
+		}
+
+		$size = $opts['trigger_icon_size'] ?? 'normal';
+		if ( in_array( $size, [ 'jumbo', 'super' ], true ) ) {
+			$classes[] = 'llb-icon-' . $size;
+		}
+
+		return implode( ' ', $classes );
 	}
 
 	/**
@@ -220,7 +242,7 @@ class MZV_LB_Content {
 		}
 
 		// Build exclusion class list.
-		$excluded = [ 'no-lightbox', 'mzv-lb-wrap' ];
+		$excluded = [ 'no-lightbox', 'llb-wrap' ];
 		if ( ! empty( $opts['excluded_classes'] ) ) {
 			$user_classes = array_map( 'trim', explode( ',', $opts['excluded_classes'] ) );
 			$user_classes = array_filter( $user_classes );

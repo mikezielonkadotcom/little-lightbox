@@ -1,5 +1,5 @@
 /**
- * MZV Lightbox v2.0.0 — Enhanced Mode JS
+ * This Little Lightbox of Mine v2.5.0 — Enhanced Mode JS
  *
  * Vanilla JS: modal, gallery, swipe, keyboard, animation, focus trap.
  * No dependencies. ES2017+.
@@ -8,7 +8,7 @@
 	'use strict';
 
 	// ── State ────────────────────────────────────────────────────────────
-	var config = window.mzvLbConfig || {};
+	var config = window.llbConfig || {};
 	var modal, modalImg, modalCaption, modalClose, modalPrev, modalNext, modalCounter, modalJump, modalBackdrop;
 	var activeGroup = null;
 	var activeIndex = 0;
@@ -16,6 +16,7 @@
 	var pendingJump = false;
 	var isOpen = false;
 	var groups = { content: [], recipe: [] };
+	var liftedAdElements = [];
 
 	// Swipe tracking.
 	var touchStartX = 0;
@@ -34,14 +35,96 @@
 		return shouldAnimate() ? (config.animationDurationMs || 200) : 0;
 	}
 
+	function getAdLayerSelector() {
+		if (!config.allowAdsAboveLightbox || !config.adLayerSelectors) {
+			return '';
+		}
+
+		return String(config.adLayerSelectors)
+			.split(',')
+			.map(function (selector) { return selector.trim(); })
+			.filter(Boolean)
+			.join(',');
+	}
+
+	function applyAdLayering() {
+		var selector = getAdLayerSelector();
+		if (!selector) return;
+
+		resetAdLayering();
+
+		var nodes;
+		try {
+			nodes = document.querySelectorAll(selector);
+		} catch (e) {
+			if (window.console && typeof window.console.warn === 'function') {
+				window.console.warn('Little Lightbox: invalid ad selector list.', e);
+			}
+			return;
+		}
+
+		nodes.forEach(function (el) {
+			if (!el || el === modal || modal.contains(el)) return;
+
+			var computed = window.getComputedStyle(el);
+			liftedAdElements.push({
+				el: el,
+				position: el.style.position,
+				zIndex: el.style.zIndex,
+				pointerEvents: el.style.pointerEvents
+			});
+
+			if (computed.position === 'static') {
+				el.style.position = 'relative';
+			}
+			el.style.zIndex = '2147483647';
+			el.style.pointerEvents = 'auto';
+			el.setAttribute('data-llb-ad-layer', '1');
+		});
+
+		if (liftedAdElements.length) {
+			document.documentElement.classList.add('llb-ads-above-lightbox');
+		}
+	}
+
+	function resetAdLayering() {
+		liftedAdElements.forEach(function (entry) {
+			if (!entry.el) return;
+			entry.el.style.position = entry.position;
+			entry.el.style.zIndex = entry.zIndex;
+			entry.el.style.pointerEvents = entry.pointerEvents;
+			entry.el.removeAttribute('data-llb-ad-layer');
+		});
+		liftedAdElements = [];
+		document.documentElement.classList.remove('llb-ads-above-lightbox');
+	}
+
+	function trackLightboxOpen(wrapEl) {
+		var imageSrc = wrapEl.getAttribute('data-llb-src') || '';
+		var imageAlt = wrapEl.getAttribute('data-llb-caption') || '';
+		var img = wrapEl.querySelector('img');
+
+		if (!imageAlt && img) {
+			imageAlt = img.getAttribute('alt') || '';
+		}
+
+		if (typeof gtag === 'function') {
+			gtag('event', 'lightbox_open', {
+				'event_category': 'engagement',
+				'event_label': imageSrc || imageAlt || 'unknown',
+				'image_url': imageSrc
+			});
+		}
+	}
+
 	// ── Init ─────────────────────────────────────────────────────────────
 	function init() {
-		var wraps = document.querySelectorAll('.mzv-lb-wrap');
+		var wraps = document.querySelectorAll('.llb-wrap');
 		if (!wraps.length) return;
 
 		// Build gallery groups.
 		wraps.forEach(function (wrap) {
-			var group = wrap.getAttribute('data-mzv-lb-group') || 'content';
+			var group = wrap.getAttribute('data-llb-group') || 'content';
 			if (!groups[group]) groups[group] = [];
 			groups[group].push(wrap);
 		});
@@ -66,7 +149,7 @@
 	// ── Modal DOM ────────────────────────────────────────────────────────
 	function createModal() {
 		modal = document.createElement('div');
-		modal.id = 'mzv-lb-modal';
+		modal.id = 'llb-modal';
 		modal.setAttribute('role', 'dialog');
 		modal.setAttribute('aria-modal', 'true');
 		modal.setAttribute('aria-label', 'Image lightbox');
@@ -75,50 +158,50 @@
 		var i18n = config.i18n || {};
 
 		modalBackdrop = document.createElement('div');
-		modalBackdrop.className = 'mzv-lb-backdrop';
+		modalBackdrop.className = 'llb-backdrop';
 		modal.appendChild(modalBackdrop);
 
 		modalPrev = document.createElement('button');
-		modalPrev.className = 'mzv-lb-prev is-hidden';
+		modalPrev.className = 'llb-prev is-hidden';
 		modalPrev.setAttribute('aria-label', i18n.prev || 'Previous image');
 		modal.appendChild(modalPrev);
 
 		modalNext = document.createElement('button');
-		modalNext.className = 'mzv-lb-next is-hidden';
+		modalNext.className = 'llb-next is-hidden';
 		modalNext.setAttribute('aria-label', i18n.next || 'Next image');
 		modal.appendChild(modalNext);
 
 		var content = document.createElement('div');
-		content.className = 'mzv-lb-content';
+		content.className = 'llb-content';
 
 		modalImg = document.createElement('img');
-		modalImg.className = 'mzv-lb-full';
+		modalImg.className = 'llb-full';
 		modalImg.setAttribute('loading', 'lazy');
 		modalImg.setAttribute('decoding', 'async');
 		content.appendChild(modalImg);
 
 		modalCaption = document.createElement('span');
-		modalCaption.className = 'mzv-lb-caption';
+		modalCaption.className = 'llb-caption';
 		content.appendChild(modalCaption);
 
 		modalJump = document.createElement('a');
-		modalJump.className = 'mzv-lb-jump-link is-hidden';
+		modalJump.className = 'llb-jump-link is-hidden';
 		modalJump.href = '#';
 		modalJump.setAttribute('role', 'button');
 		modalJump.textContent = i18n.jumpToRecipe || 'Jump to Recipe ↓';
 		content.appendChild(modalJump);
 
+		modalCounter = document.createElement('span');
+		modalCounter.className = 'llb-counter is-hidden';
+		modalCounter.setAttribute('aria-live', 'polite');
+		content.appendChild(modalCounter);
+
 		modal.appendChild(content);
 
 		modalClose = document.createElement('button');
-		modalClose.className = 'mzv-lb-close';
+		modalClose.className = 'llb-close';
 		modalClose.setAttribute('aria-label', i18n.close || 'Close image');
 		modal.appendChild(modalClose);
-
-		modalCounter = document.createElement('span');
-		modalCounter.className = 'mzv-lb-counter is-hidden';
-		modalCounter.setAttribute('aria-live', 'polite');
-		modal.appendChild(modalCounter);
 
 		document.body.appendChild(modal);
 
@@ -143,12 +226,13 @@
 		lastFocused = wrapEl;
 		pendingJump = false;
 
-		var group = wrapEl.getAttribute('data-mzv-lb-group') || 'content';
+		var group = wrapEl.getAttribute('data-llb-group') || 'content';
 		activeGroup = groups[group] || [];
 		activeIndex = activeGroup.indexOf(wrapEl);
 		if (activeIndex < 0) activeIndex = 0;
 
 		updateModalContent();
+		trackLightboxOpen(wrapEl);
 
 		// Show modal.
 		modal.style.display = 'flex';
@@ -156,7 +240,7 @@
 
 		// Set animation duration.
 		var duration = getDuration();
-		modal.style.setProperty('--mzv-lb-duration', duration + 'ms');
+		modal.style.setProperty('--llb-duration', duration + 'ms');
 
 		if (shouldAnimate()) {
 			// Force reflow before adding class.
@@ -170,7 +254,8 @@
 		}
 
 		// Lock body scroll.
-		document.documentElement.classList.add('mzv-lb-open');
+		document.documentElement.classList.add('llb-open');
+		applyAdLayering();
 
 		// Focus close button.
 		modalClose.focus();
@@ -206,13 +291,23 @@
 		}
 	}
 
+	function scrollToRecipe() {
+		var selector = config.recipeCardSelector || '[id^="wprm-recipe-container-"], .wprm-recipe-container';
+		var target = document.querySelector(selector);
+
+		if (target) {
+			target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		}
+	}
+
 	function afterClose() {
 		modal.classList.remove('is-visible');
 		modal.style.display = 'none';
 		modal.setAttribute('aria-hidden', 'true');
 
 		// Restore scroll.
-		document.documentElement.classList.remove('mzv-lb-open');
+		document.documentElement.classList.remove('llb-open');
+		resetAdLayering();
 
 		// Clear image src.
 		modalImg.src = '';
@@ -223,26 +318,32 @@
 			lastFocused.focus();
 		}
 
-		// Execute pending jump scroll.
+		// Execute pending jump scroll after the close flow completes.
 		if (pendingJump) {
 			pendingJump = false;
-			var selector = config.recipeCardSelector || '.wprm-recipe-container';
-			var target = document.querySelector(selector);
-			if (target) {
-				var behavior = prefersReducedMotion() ? 'auto' : 'smooth';
-				target.scrollIntoView({ behavior: behavior, block: 'start' });
-			}
+			setTimeout(scrollToRecipe, 150);
 		}
 	}
 
 	// ── Update modal content ─────────────────────────────────────────────
+	function pageHasRecipeCard() {
+		return !!document.querySelector('.wprm-recipe-container');
+	}
+
+	function isInsideRecipeCard(wrapEl) {
+		return !!(wrapEl && wrapEl.closest('.wprm-recipe-container'));
+	}
+
+	function shouldShowJumpLink(wrapEl) {
+		return !!(config.wprmJumpEnabled && pageHasRecipeCard() && !isInsideRecipeCard(wrapEl));
+	}
+
 	function updateModalContent() {
 		var wrapEl = activeGroup[activeIndex];
 		if (!wrapEl) return;
 
-		var src = wrapEl.getAttribute('data-mzv-lb-src') || '';
-		var caption = wrapEl.getAttribute('data-mzv-lb-caption') || '';
-		var hasJump = wrapEl.getAttribute('data-mzv-lb-has-jump') === '1';
+		var src = wrapEl.getAttribute('data-llb-src') || '';
+		var caption = wrapEl.getAttribute('data-llb-caption') || '';
 
 		modalImg.src = src;
 		modalImg.alt = caption;
@@ -251,8 +352,9 @@
 		modalCaption.textContent = caption;
 		modalCaption.classList.toggle('is-empty', !caption);
 
-		// Jump link.
-		if (config.wprmJumpEnabled && hasJump) {
+		// Jump link: only show when this page has a WPRM recipe card and the
+		// active image is outside that recipe card.
+		if (shouldShowJumpLink(wrapEl)) {
 			modalJump.classList.remove('is-hidden');
 		} else {
 			modalJump.classList.add('is-hidden');

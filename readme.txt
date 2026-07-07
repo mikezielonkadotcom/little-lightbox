@@ -1,10 +1,10 @@
-=== MZV Lightbox ===
+=== This Little Lightbox of Mine ===
 Contributors: mikezielonka
 Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 2.0.0
+Stable tag: 2.6.1
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -12,7 +12,7 @@ Lightweight lightbox for WordPress with CSS-Only and Enhanced modes. Gallery nav
 
 == Description ==
 
-MZV Lightbox automatically wraps `.entry-content` images in a configurable lightbox with two operating modes:
+This Little Lightbox of Mine automatically wraps `.entry-content` images in a configurable lightbox with two operating modes:
 
 * **Enhanced Mode (default):** JS-driven modal with gallery navigation, captions, swipe/keyboard support, animations, and WPRM "Jump to Recipe" integration.
 * **CSS-Only Mode:** Pure-CSS checkbox-hack lightbox — zero JavaScript, inline styles, minimal footprint.
@@ -27,16 +27,66 @@ MZV Lightbox automatically wraps `.entry-content` images in a configurable light
 * Minimum image width filter
 * Excluded CSS classes filter
 * Recipe card image toggle (separate gallery group)
+* Desktop trigger icon can stay visible in the image corner
+* Trigger icon size controls: normal, jumbo (2x), and super size (3x)
 * WPRM lightbox conflict detection with admin notice
+* Optional ad layering for selected video-player and sticky-footer ad containers (Enhanced)
 * Self-hosted updates via Update Machine v2
 * `.no-lightbox` escape hatch class
 * Body scroll lock, focus trap, full accessibility support
 
+== Telemetry & privacy ==
+
+The updater sends a small telemetry payload to the update server:
+
+| Field | Sent on hourly update check | Sent on activation (registration) |
+|---|---|---|
+| `site_url` | Yes | Yes (also part of the HMAC signature) |
+| `site_name` | Yes | Yes |
+| `plugin_version` | Yes | Yes |
+| `plugin_slug` | No (implied by URL) | Yes |
+| `sdk_version` | Yes | Yes (also sent on challenge init) |
+
+That's the complete list. No admin email (removed in um-updater v4.1.0 because the site key already identifies the install), no WordPress version, no PHP version, no locale, and no user data. Zero-config challenge registration sends only `site_url`, `plugin_slug`, `plugin_version`, and `sdk_version`; it does not send the site name.
+
+Site owners can disable the telemetry payload from the plugin settings screen. Update checks still happen, but the request body is empty; the update server sees only what any HTTP request carries, plus the auth headers needed to serve the manifest.
+
 == Changelog ==
+
+= 2.6.1 =
+* Dev: Updated the bundled Update Machine updater SDK to v4.4.1.
+
+= 2.6.0 =
+* Dev: Updated the bundled Update Machine updater SDK to v4.4.0.
+* Dev: Added telemetry opt-out cleanup on uninstall and package validation coverage for `uninstall.php`.
+
+= 2.5.0 =
+* New: Added a desktop trigger icon setting that keeps the magnifier visible in the image corner instead of only showing it on hover.
+* New: Added trigger icon size options: normal, jumbo (2x), and super size (3x).
+
+= 2.4.0 =
+* New: Added an Enhanced-mode setting to let selected ad containers render above the lightbox while it is open.
+* New: Added configurable ad-layer selectors for video-player and sticky-footer ad wrappers. The setting is off by default.
+* Dev: Added CI package validation and reusable release ZIP build scripts.
+
+= 2.3.0 =
+* Fix: Close, prev, and next buttons now reset native button appearance (`appearance: none`), preventing platform/theme-default button chrome from painting over the SVG icons (manifested as a grey square in place of the close X on some browsers/themes).
+* Changed: Renamed all frontend CSS classes, IDs, data attributes, and JS config object from `mzv-lb-*` / `mzvLbConfig` to `llb-*` / `llbConfig`. **Breaking** for any custom CSS or JS that targeted the old prefix.
+* Changed: Bumped specificity on close/prev/next button rules with `#llb-modal` scope so theme button rules can't override them.
+* Note: Existing settings, post meta, and database keys are unchanged — no data migration required.
+
+= 2.2.0 =
+* Fix: Jump to Recipe now closes the Enhanced lightbox before smoothly scrolling to the WPRM recipe container.
+* Changed: Jump to Recipe is only available in Enhanced mode because CSS-Only mode cannot close itself with JavaScript.
+
+= 2.1.0 =
+* Changed: Rebranded plugin to This Little Lightbox of Mine with little-lightbox text domain and asset filenames.
+* New: Fire a GA4 lightbox_open event when Enhanced mode opens an image and gtag is available.
+* Cleanup: Removed repository-only screenshots and planning/review docs from the plugin source.
 
 = 2.0.0 =
 * New: Two-mode architecture — CSS-Only and Enhanced modes
-* New: Settings page (Settings → MZV Lightbox)
+* New: Settings page (Settings → This Little Lightbox of Mine)
 * New: Gallery navigation with prev/next arrows and counter
 * New: Caption source selection (alt, title, description, none)
 * New: Animation controls (enable/disable, duration)

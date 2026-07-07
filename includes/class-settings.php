@@ -1,6 +1,6 @@
 <?php
 /**
- * MZV Lightbox Settings — WP Settings API registration + defaults.
+ * This Little Lightbox of Mine Settings — WP Settings API registration + defaults.
  *
  * @package MZV_Lightbox
  */
@@ -16,16 +16,20 @@ class MZV_LB_Settings {
 	 */
 	public static function defaults(): array {
 		return [
-			'lightbox_mode'           => 'enhanced',
-			'caption_source'          => 'alt',
-			'wprm_jump_enabled'       => true,
-			'min_image_width'         => 0,
-			'excluded_classes'        => '',
-			'recipe_card_lightbox'    => true,
-			'gallery_enabled'         => true,
-			'animations_enabled'      => true,
-			'animation_duration_ms'   => 200,
-			'wprm_conflict_dismissed' => false,
+			'lightbox_mode'                => 'enhanced',
+			'caption_source'               => 'alt',
+			'wprm_jump_enabled'            => true,
+			'min_image_width'              => 0,
+			'excluded_classes'             => '',
+			'recipe_card_lightbox'         => true,
+			'desktop_icon_always_visible'  => true,
+			'trigger_icon_size'            => 'normal',
+			'allow_ads_above_lightbox'     => false,
+			'ad_layer_selectors'           => '.adthrive-video-player, .adthrive-sticky-footer, .adthrive-sticky-outstream, .mediavine-video__container, .mediavine-sticky-footer',
+			'gallery_enabled'              => true,
+			'animations_enabled'           => true,
+			'animation_duration_ms'        => 200,
+			'wprm_conflict_dismissed'      => false,
 		];
 	}
 
@@ -72,46 +76,57 @@ class MZV_LB_Settings {
 
 	/**
 	 * Sanitize callback for settings save.
-	 *
-	 * When CSS-Only mode is active the Enhanced-only fields are disabled in
-	 * the browser and therefore NOT submitted with the form.  To prevent
-	 * those values from being silently reset to their defaults we merge the
-	 * incoming $input against the currently stored values before sanitising.
 	 */
 	public function sanitize( array $input ): array {
-		$clean = [];
-
-		// Fetch what is currently stored so we can fall back to it for any
-		// field that was omitted from the submitted form (e.g. because the
-		// field was disabled by the CSS-Only mode toggle).
 		$existing = get_option( self::OPTION_KEY, [] );
 		if ( ! is_array( $existing ) ) {
 			$existing = [];
 		}
 		$existing = wp_parse_args( $existing, self::defaults() );
 
-		// Helper: use submitted value when present, otherwise keep existing.
-		$submitted = function ( string $key ) use ( $input, $existing ) {
-			return array_key_exists( $key, $input ) ? $input[ $key ] : $existing[ $key ];
-		};
+		$clean = [];
 
 		$clean['lightbox_mode'] = in_array( ( $input['lightbox_mode'] ?? '' ), [ 'css', 'enhanced' ], true )
 			? $input['lightbox_mode'] : 'enhanced';
 
-		// Enhanced-only fields: fall back to existing value when not submitted.
+		$is_css_save = 'css' === $clean['lightbox_mode'];
+		$submitted   = function ( string $key ) use ( $input, $existing ) {
+			return array_key_exists( $key, $input ) ? $input[ $key ] : $existing[ $key ];
+		};
+
 		$caption_source_raw = $submitted( 'caption_source' );
 		$clean['caption_source'] = in_array( $caption_source_raw, [ 'alt', 'title', 'description', 'none' ], true )
 			? $caption_source_raw : 'alt';
 
-		$clean['wprm_jump_enabled']     = (bool) $submitted( 'wprm_jump_enabled' );
-		$clean['gallery_enabled']       = (bool) $submitted( 'gallery_enabled' );
-		$clean['animations_enabled']    = (bool) $submitted( 'animations_enabled' );
-		$clean['animation_duration_ms'] = min( 1000, max( 50, (int) $submitted( 'animation_duration_ms' ) ) );
+		$clean['wprm_jump_enabled']            = (bool) $submitted( 'wprm_jump_enabled' );
+		$clean['min_image_width']              = max( 0, (int) ( $input['min_image_width'] ?? 0 ) );
+		$clean['excluded_classes']             = sanitize_text_field( $input['excluded_classes'] ?? '' );
+		$clean['recipe_card_lightbox']         = ! empty( $input['recipe_card_lightbox'] );
+		$clean['desktop_icon_always_visible']  = ! empty( $input['desktop_icon_always_visible'] );
+		$clean['trigger_icon_size']            = in_array( ( $input['trigger_icon_size'] ?? '' ), [ 'normal', 'jumbo', 'super' ], true )
+			? $input['trigger_icon_size'] : 'normal';
 
-		// Fields available in both modes — always use submitted value.
-		$clean['min_image_width']      = max( 0, (int) ( $input['min_image_width'] ?? 0 ) );
-		$clean['excluded_classes']     = sanitize_text_field( $input['excluded_classes'] ?? '' );
-		$clean['recipe_card_lightbox'] = ! empty( $input['recipe_card_lightbox'] );
+		// Enhanced-only controls are disabled in CSS mode and therefore omitted from
+		// the Settings API payload. Preserve saved values instead of resetting them.
+		$clean['allow_ads_above_lightbox'] = ( $is_css_save && ! array_key_exists( 'allow_ads_above_lightbox', $input ) )
+			? (bool) $existing['allow_ads_above_lightbox']
+			: ! empty( $input['allow_ads_above_lightbox'] );
+
+		$clean['ad_layer_selectors'] = ( $is_css_save && ! array_key_exists( 'ad_layer_selectors', $input ) )
+			? (string) $existing['ad_layer_selectors']
+			: sanitize_text_field( $input['ad_layer_selectors'] ?? '' );
+
+		$clean['gallery_enabled'] = ( $is_css_save && ! array_key_exists( 'gallery_enabled', $input ) )
+			? (bool) $existing['gallery_enabled']
+			: ! empty( $input['gallery_enabled'] );
+
+		$clean['animations_enabled'] = ( $is_css_save && ! array_key_exists( 'animations_enabled', $input ) )
+			? (bool) $existing['animations_enabled']
+			: ! empty( $input['animations_enabled'] );
+
+		$clean['animation_duration_ms'] = ( $is_css_save && ! array_key_exists( 'animation_duration_ms', $input ) )
+			? (int) $existing['animation_duration_ms']
+			: min( 1000, max( 50, (int) ( $input['animation_duration_ms'] ?? 200 ) ) );
 
 		// Preserve dismissed state across saves.
 		$clean['wprm_conflict_dismissed'] = ! empty( $existing['wprm_conflict_dismissed'] );
