@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Requires: gh CLI (authenticated with repo access)
 
-UM_UPDATER_REF_DEFAULT="v4.4.1"
+UM_UPDATER_REF_DEFAULT="v4.4.2"
 DEST_DEFAULT="includes/um-updater.php"
 
 REF="${UM_UPDATER_REF:-$UM_UPDATER_REF_DEFAULT}"
@@ -21,8 +21,8 @@ Env vars:
   UM_UPDATER_DEST  (default: ${DEST_DEFAULT})
 
 Examples:
-  UM_UPDATER_REF=v4.4.1 $(basename "$0")
-  $(basename "$0") --ref v4.4.1 --dest includes/um-updater.php
+  UM_UPDATER_REF=v4.4.2 $(basename "$0")
+  $(basename "$0") --ref v4.4.2 --dest includes/um-updater.php
 EOF
 }
 

@@ -310,7 +310,7 @@ class MZV_LB_Admin {
 			echo '<p class="description">' . esc_html__( 'WPRM not detected.', 'little-lightbox' ) . '</p>';
 		}
 
-		echo '<p class="description">' . esc_html__( 'Available in Enhanced mode only.', 'little-lightbox' ) . '</p>';
+		echo '<p class="description">' . esc_html__( 'Works in both CSS-Only and Enhanced modes because it is a plain anchor link.', 'little-lightbox' ) . '</p>';
 	}
 
 	// ── WPRM Conflict Notice ─────────────────────────────────────────────

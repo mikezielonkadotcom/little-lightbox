@@ -42,6 +42,8 @@ input.llb-toggle:checked~.llb-overlay .llb-full{transform:scale(1);transition:tr
 .llb-backdrop{position:absolute;inset:0;cursor:default}
 .llb-caption{margin-top:8px;padding:4px 14px;background:rgba(0,0,0,.6);color:#fff;font-size:.85rem;line-height:1.4;border-radius:999px;max-width:90vw;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .llb-trigger:focus-visible{outline:2px solid #0073aa;outline-offset:2px;border-radius:2px}
+.llb-jump-link{display:inline-block;margin-top:8px;padding:4px 14px;background:rgba(255,255,255,.15);color:#fff;font-size:.8rem;text-decoration:none;border-radius:999px}
+.llb-jump-link:hover{background:rgba(255,255,255,.25);color:#fff}
 @media(prefers-reduced-motion:reduce){.llb-overlay,input.llb-toggle:checked~.llb-overlay,.llb-hover{transition:none}.llb-full,input.llb-toggle:checked~.llb-overlay .llb-full{transition:none;transform:scale(1)}}
 @media print{.llb-overlay,.llb-hover,.llb-mobile-hint,.llb-toggle{display:none!important}}
 CSS;
@@ -56,9 +58,11 @@ CSS;
 	 * @param string      $alt      Alt text.
 	 * @param array       $opts     Plugin options.
 	 * @param DOMDocument $doc      The document.
+	 * @param bool        $has_jump Whether to render a "Jump to Recipe" link.
+	 * @param string      $jump_href Anchor href for the jump link.
 	 * @return DOMElement The wrapper fragment.
 	 */
-	public static function build_markup( string $id, DOMElement $img, string $full_src, string $alt, array $opts, DOMDocument $doc ): DOMElement {
+	public static function build_markup( string $id, DOMElement $img, string $full_src, string $alt, array $opts, DOMDocument $doc, bool $has_jump = false, string $jump_href = '#wprm-recipe-container-0' ): DOMElement {
 		// Container span.
 		$wrap = $doc->createElement( 'span' );
 		$wrap->setAttribute( 'class', self::get_wrap_classes( $opts ) );
@@ -128,6 +132,15 @@ CSS;
 			$caption->setAttribute( 'class', 'llb-caption' );
 			$caption->textContent = $alt;
 			$overlay->appendChild( $caption );
+		}
+
+		// Jump to Recipe link: plain anchor so it works without JS.
+		if ( $has_jump ) {
+			$jump = $doc->createElement( 'a' );
+			$jump->setAttribute( 'href', $jump_href );
+			$jump->setAttribute( 'class', 'llb-jump-link' );
+			$jump->textContent = __( 'Jump to Recipe ↓', 'little-lightbox' );
+			$overlay->appendChild( $jump );
 		}
 
 		$wrap->appendChild( $input );

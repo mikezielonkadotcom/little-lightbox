@@ -151,7 +151,8 @@ class MZV_LB_Content {
 			$full_src = $this->get_full_size_url( $img );
 
 			if ( 'css' === $mode ) {
-				$markup = MZV_LB_CSS_Mode::build_markup( $id, $img, $full_src, $alt, $opts, $doc );
+				$has_jump_css = 'recipe' !== $group && $opts['wprm_jump_enabled'] && $this->current_post_has_recipe();
+				$markup       = MZV_LB_CSS_Mode::build_markup( $id, $img, $full_src, $alt, $opts, $doc, (bool) $has_jump_css );
 			} else {
 				$markup = $this->build_enhanced_markup( $img, $full_src, $group, $opts, $doc );
 			}

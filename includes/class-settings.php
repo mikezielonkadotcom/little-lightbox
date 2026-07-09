@@ -90,15 +90,15 @@ class MZV_LB_Settings {
 			? $input['lightbox_mode'] : 'enhanced';
 
 		$is_css_save = 'css' === $clean['lightbox_mode'];
+		$submitted   = function ( string $key ) use ( $input, $existing ) {
+			return array_key_exists( $key, $input ) ? $input[ $key ] : $existing[ $key ];
+		};
 
-		if ( array_key_exists( 'caption_source', $input ) ) {
-			$clean['caption_source'] = in_array( $input['caption_source'], [ 'alt', 'title', 'description', 'none' ], true )
-				? $input['caption_source'] : 'alt';
-		} else {
-			$clean['caption_source'] = $existing['caption_source'];
-		}
+		$caption_source_raw = $submitted( 'caption_source' );
+		$clean['caption_source'] = in_array( $caption_source_raw, [ 'alt', 'title', 'description', 'none' ], true )
+			? $caption_source_raw : 'alt';
 
-		$clean['wprm_jump_enabled']            = ! empty( $input['wprm_jump_enabled'] );
+		$clean['wprm_jump_enabled']            = (bool) $submitted( 'wprm_jump_enabled' );
 		$clean['min_image_width']              = max( 0, (int) ( $input['min_image_width'] ?? 0 ) );
 		$clean['excluded_classes']             = sanitize_text_field( $input['excluded_classes'] ?? '' );
 		$clean['recipe_card_lightbox']         = ! empty( $input['recipe_card_lightbox'] );
