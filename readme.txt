@@ -2,9 +2,9 @@
 Contributors: mikezielonka
 Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
-Tested up to: 6.8
+Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.6.1
+Stable tag: 2.6.2
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -59,8 +59,11 @@ Site owners can disable the telemetry payload from the plugin settings screen. U
 
 == Changelog ==
 
+= 2.6.2 =
+* Dev: Updated the bundled Update Machine updater SDK to v4.4.2, including registration recovery, keyed download fixes, and expanded telemetry disclosure.
+
 = 2.6.1 =
-* Dev: Updated the bundled Update Machine updater SDK to v4.4.2.
+* Dev: Updated the bundled Update Machine updater SDK to v4.4.1.
 
 = 2.6.0 =
 * Dev: Updated the bundled Update Machine updater SDK to v4.4.0.
