@@ -86,10 +86,10 @@ if ! head -n 1 "includes/um-updater.php" | grep -q '^<?php'; then
   exit 1
 fi
 
-EXPECTED_UPDATER_SHA256="363d5aac51cc817f2370989dd17d64682bb2282b9e5b535a21444a589315cefc"
+EXPECTED_UPDATER_SHA256="fc1808394612c3b31b9acfcda9879f808afb3e7716282f8ed59baa508d8483a2"
 UPDATER_SHA256="$(sha256sum "includes/um-updater.php" | awk '{print $1}')"
 if [ "$UPDATER_SHA256" != "$EXPECTED_UPDATER_SHA256" ]; then
-  echo "::error::includes/um-updater.php does not match um-updater v4.4.2" >&2
+  echo "::error::includes/um-updater.php does not match um-updater v4.4.3" >&2
   exit 1
 fi
 
@@ -148,7 +148,7 @@ PY
 
   ARCHIVED_UPDATER_SHA256="$(unzip -p "$ZIP_PATH" "$SLUG/includes/um-updater.php" | sha256sum | awk '{print $1}')"
   if [ "$ARCHIVED_UPDATER_SHA256" != "$EXPECTED_UPDATER_SHA256" ]; then
-    echo "::error::ZIP updater does not match um-updater v4.4.2" >&2
+    echo "::error::ZIP updater does not match um-updater v4.4.3" >&2
     exit 1
   fi
 
