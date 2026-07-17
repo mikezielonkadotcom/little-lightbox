@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.6.2
+Stable tag: 2.6.3
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -58,6 +58,9 @@ Optional usage snapshots are for plugin feature flags/counters, not user data. T
 Site owners can disable the telemetry payload from the plugin settings screen. Update checks still happen, but the request body is empty; the update server sees only what any HTTP request carries, plus the auth headers needed to serve the manifest.
 
 == Changelog ==
+
+= 2.6.3 =
+* Security: Updated the bundled Update Machine updater SDK to v4.4.3 with stricter TLS and ZIP integrity enforcement.
 
 = 2.6.2 =
 * Dev: Updated the bundled Update Machine updater SDK to v4.4.2, including registration recovery, keyed download fixes, and expanded telemetry disclosure.

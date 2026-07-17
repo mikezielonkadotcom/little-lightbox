@@ -22,7 +22,7 @@
  *     $updater->set_license_client( $license_client );
  *
  * @package UM\PluginUpdater
- * @version 4.4.2
+ * @version 4.4.3
  */
 
 namespace UM\PluginUpdater;
@@ -35,7 +35,7 @@ defined( 'ABSPATH' ) || exit;
 // copy's classes win the class_exists race below — so the copy that DOES boot
 // can detect version skew and warn (see Updater::maybe_warn_version_skew).
 // Keep this literal in sync with @version.
-$GLOBALS['um_updater_sdk_copies']['4.4.2'][] = __FILE__;
+$GLOBALS['um_updater_sdk_copies']['4.4.3'][] = __FILE__;
 
 /**
  * Register a plugin for self-hosted updates.
@@ -79,13 +79,14 @@ class Updater {
 	private string $basename;
 	private string $cache_key;
 	private string $key_option;
+	private string $hash_expected_option;
 	private string $challenge_transient;
 	private string $download_403_option;
 	private string $opportunistic_registration_option;
 	private $usage_callback = null;
 
 	/** SDK version reported in telemetry — must match the file's @version. */
-	public const SDK_VERSION = '4.4.2';
+	public const SDK_VERSION = '4.4.3';
 
 	private const CHALLENGE_TTL             = 15 * MINUTE_IN_SECONDS;
 	private const REGISTRATION_RETRY_DELAYS = [
@@ -112,6 +113,7 @@ class Updater {
 		$this->basename   = plugin_basename( $this->file );
 		$this->cache_key  = 'um_update_' . $this->slug;
 		$this->key_option = 'um_site_key_' . $this->slug;
+		$this->hash_expected_option = 'um_hash_expected_' . $this->slug;
 		$this->challenge_transient = 'um_challenge_' . $this->slug;
 		$this->download_403_option = 'um_download_403_' . $this->slug;
 		$this->opportunistic_registration_option = 'um_registration_last_attempt_' . $this->slug;
@@ -142,6 +144,7 @@ class Updater {
 	 */
 	public static function cleanup( string $slug ): void {
 		delete_option( 'um_site_key_' . $slug );
+		delete_option( 'um_hash_expected_' . $slug );
 		delete_option( 'um_telemetry_optout_' . $slug );
 		delete_option( 'um_download_403_' . $slug );
 		delete_option( 'um_registration_last_attempt_' . $slug );
@@ -353,8 +356,9 @@ class Updater {
 		// Canonical endpoint is /api/register; older SDKs hit /register and
 		// ride the server's compatibility rewrite.
 		$response = wp_remote_post( $this->server . '/api/register', [
-			'timeout' => 15,
-			'headers' => [
+			'timeout'   => 15,
+			'sslverify' => true,
+			'headers'   => [
 				'Content-Type' => 'application/json',
 				'Accept'       => 'application/json',
 			],
@@ -394,8 +398,9 @@ class Updater {
 		$current_version = $plugin_data['Version'] ?? '';
 
 		$response = wp_remote_post( $this->server . '/api/register/init', [
-			'timeout' => 15,
-			'headers' => [
+			'timeout'   => 15,
+			'sslverify' => true,
+			'headers'   => [
 				'Content-Type' => 'application/json',
 				'Accept'       => 'application/json',
 			],
@@ -501,8 +506,9 @@ class Updater {
 		}
 
 		$response = wp_remote_post( $this->server . '/api/register/verify', [
-			'timeout' => 15,
-			'headers' => [
+			'timeout'   => 15,
+			'sslverify' => true,
+			'headers'   => [
 				'Content-Type' => 'application/json',
 				'Accept'       => 'application/json',
 			],
@@ -935,8 +941,40 @@ class Updater {
 
 		$cached = get_transient( $this->cache_key );
 
-		// No sha256 in cached manifest — allow but warn.
-		if ( ! $cached || ! isset( $cached->sha256 ) ) {
+		$hash_expected = (bool) get_option( $this->hash_expected_option, false );
+
+		// WordPress can retain its update offer longer than our manifest cache.
+		// Refresh an expired cache before deciding whether the hash disappeared.
+		if ( false === $cached ) {
+			$cached        = $this->fetch_update_data();
+			$hash_expected = (bool) get_option( $this->hash_expected_option, false );
+		}
+
+		if ( ! is_object( $cached ) ) {
+			if ( $hash_expected ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				error_log( "um-updater [{$this->slug}]: Update manifest unavailable while confirming SHA-256 integrity — refusing update." );
+				return new \WP_Error(
+					'um_manifest_unavailable',
+					__( 'Update blocked: the update manifest could not be retrieved to confirm package integrity. Please try again.', 'um-updater' )
+				);
+			}
+
+			return $reply;
+		}
+
+		// Preserve compatibility for plugins that have never shipped hashes, but
+		// fail closed once this install has observed a valid manifest hash.
+		if ( ! isset( $cached->sha256 ) ) {
+			if ( $hash_expected ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+				error_log( "um-updater [{$this->slug}]: Update manifest omits sha256 after hashes were previously observed — refusing update." );
+				return new \WP_Error(
+					'um_sha256_missing',
+					__( 'Update blocked: expected an integrity hash but the update manifest did not provide one. Please contact the plugin author.', 'um-updater' )
+				);
+			}
+
 			if ( $cached ) {
 				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 				error_log( "um-updater [{$this->slug}]: Update manifest missing sha256 field — skipping integrity check." );
@@ -944,8 +982,35 @@ class Updater {
 			return $reply;
 		}
 
-		// Download the ZIP to a temp file.
-		$tmp = download_url( $package );
+		$expected_hash = $this->normalize_sha256( $cached->sha256 );
+		if ( '' === $expected_hash ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( "um-updater [{$this->slug}]: Update manifest contains an invalid sha256 value — refusing update." );
+			return new \WP_Error(
+				'um_sha256_invalid',
+				__( 'Update blocked: the update manifest contains an invalid integrity hash. Please contact the plugin author.', 'um-updater' )
+			);
+		}
+
+		if ( ! $hash_expected ) {
+			update_option( $this->hash_expected_option, 1, false );
+		}
+
+		// download_url() accepts no request arguments, so pin TLS verification
+		// with a narrowly scoped filter and always remove it after the request.
+		$force_sslverify = static function ( $args ) {
+			if ( is_array( $args ) ) {
+				$args['sslverify'] = true;
+			}
+			return $args;
+		};
+		add_filter( 'http_request_args', $force_sslverify, PHP_INT_MAX );
+		try {
+			$tmp = download_url( $package );
+		} finally {
+			remove_filter( 'http_request_args', $force_sslverify, PHP_INT_MAX );
+		}
+
 		if ( is_wp_error( $tmp ) ) {
 			$this->maybe_self_heal_domain_locked_key( $tmp );
 			return $tmp;
@@ -954,11 +1019,21 @@ class Updater {
 		delete_option( $this->download_403_option );
 
 		// Compute and compare SHA-256.
-		$actual = hash_file( 'sha256', $tmp );
-		if ( ! hash_equals( $cached->sha256, $actual ) ) {
+		$actual = @hash_file( 'sha256', $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+		if ( ! is_string( $actual ) ) {
 			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			error_log( "um-updater [{$this->slug}]: SHA-256 mismatch — expected {$cached->sha256}, got {$actual}. Update blocked." );
+			error_log( "um-updater [{$this->slug}]: Downloaded ZIP could not be read for SHA-256 verification — refusing update." );
+			return new \WP_Error(
+				'um_sha256_unreadable',
+				__( 'Update blocked: the downloaded ZIP could not be verified. Please try again or contact the plugin author.', 'um-updater' )
+			);
+		}
+
+		if ( ! hash_equals( $expected_hash, $actual ) ) {
+			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( "um-updater [{$this->slug}]: SHA-256 mismatch — expected {$expected_hash}, got {$actual}. Update blocked." );
 			return new \WP_Error(
 				'um_sha256_mismatch',
 				__( 'Update blocked: ZIP integrity check failed. Please contact the plugin author.', 'um-updater' )
@@ -966,6 +1041,16 @@ class Updater {
 		}
 
 		return $tmp;
+	}
+
+	/**
+	 * Normalize a manifest SHA-256 value, or return an empty string if invalid.
+	 *
+	 * @param mixed $value Remote manifest value.
+	 */
+	private function normalize_sha256( $value ): string {
+		$hash = strtolower( trim( (string) $value ) );
+		return preg_match( '/^[a-f0-9]{64}$/', $hash ) ? $hash : '';
 	}
 
 	/**
@@ -1124,16 +1209,18 @@ class Updater {
 		// POST itself must stay because license-gated responses (download
 		// tokens, warnings) only come back on this path.
 		$response = wp_remote_post( $this->update_url, [
-			'timeout' => 10,
-			'headers' => $request_headers,
-			'body'    => wp_json_encode( $telemetry_disabled ? (object) [] : $telemetry ),
+			'timeout'   => 10,
+			'sslverify' => true,
+			'headers'   => $request_headers,
+			'body'      => wp_json_encode( $telemetry_disabled ? (object) [] : $telemetry ),
 		] );
 
 		// Fallback to GET if POST fails (e.g. server doesn't support POST yet).
 		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
 			$response = wp_remote_get( $this->update_url, [
-				'timeout' => 10,
-				'headers' => $get_headers,
+				'timeout'   => 10,
+				'sslverify' => true,
+				'headers'   => $get_headers,
 			] );
 		}
 
@@ -1155,6 +1242,12 @@ class Updater {
 		if ( ! $data || empty( $data->version ) ) {
 			set_transient( $this->cache_key, 'error', self::ERROR_TTL );
 			return null;
+		}
+
+		// Record valid hash support as soon as it is observed. Waiting until an
+		// install begins would leave a downgrade window between update checks.
+		if ( isset( $data->sha256 ) && '' !== $this->normalize_sha256( $data->sha256 ) ) {
+			update_option( $this->hash_expected_option, 1, false );
 		}
 
 		// Forward server-side warnings to the license client (e.g. "payment past due").
