@@ -108,6 +108,8 @@ if command -v php >/dev/null 2>&1; then
     -path './.git' -prune -o \
     -path './release' -prune -o \
     -name '*.php' -type f -print0)
+  php tests/feature-telemetry.php
+  php tests/updater-bootstrap.php
 else
   echo "::warning::php not found; skipping PHP lint"
 fi
