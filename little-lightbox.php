@@ -3,7 +3,7 @@
  * Plugin Name: This Little Lightbox of Mine
  * Plugin URI:  https://github.com/mikezielonkadotcom/little-lightbox
  * Description: Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes, gallery browsing, captions, swipe, keyboard navigation, and WPRM integration.
- * Version:     2.6.3
+ * Version:     2.6.4
  * Author:      Mike Zielonka Ventures
  * Author URI:  https://mikezielonka.com
  * License:     GPL-2.0-or-later
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MZV_LB_VERSION', '2.6.3' );
+define( 'MZV_LB_VERSION', '2.6.4' );
 define( 'MZV_LB_FILE', __FILE__ );
 define( 'MZV_LB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MZV_LB_URL', plugin_dir_url( __FILE__ ) );
@@ -25,6 +25,7 @@ require_once MZV_LB_DIR . 'includes/class-settings.php';
 require_once MZV_LB_DIR . 'includes/class-content.php';
 require_once MZV_LB_DIR . 'includes/class-css-mode.php';
 require_once MZV_LB_DIR . 'includes/class-admin.php';
+require_once MZV_LB_DIR . 'includes/class-feature-telemetry.php';
 require_once MZV_LB_DIR . 'includes/um-updater.php';
 
 add_action( 'init', function() {
@@ -39,10 +40,11 @@ add_action( 'init', function() {
 
 	if ( is_admin() ) {
 		$GLOBALS['little_lightbox_updater'] = \UM\PluginUpdater\register( [
-			'file'       => MZV_LB_FILE,
-			'slug'       => 'little-lightbox',
-			'update_url' => 'https://updatemachine.com/little-lightbox/update.json',
-			'server'     => 'https://updatemachine.com',
+			'file'              => MZV_LB_FILE,
+			'slug'              => 'little-lightbox',
+			'update_url'        => 'https://updatemachine.com/little-lightbox/update.json',
+			'server'            => 'https://updatemachine.com',
+			'feature_telemetry' => MZV_LB_Feature_Telemetry::config(),
 		] );
 	}
 } );
