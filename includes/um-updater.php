@@ -22,7 +22,7 @@
  *     $updater->set_license_client( $license_client );
  *
  * @package UM\PluginUpdater
- * @version 4.4.3
+ * @version 4.5.0
  */
 
 namespace UM\PluginUpdater;
@@ -35,7 +35,7 @@ defined( 'ABSPATH' ) || exit;
 // copy's classes win the class_exists race below — so the copy that DOES boot
 // can detect version skew and warn (see Updater::maybe_warn_version_skew).
 // Keep this literal in sync with @version.
-$GLOBALS['um_updater_sdk_copies']['4.4.3'][] = __FILE__;
+$GLOBALS['um_updater_sdk_copies']['4.5.0'][] = __FILE__;
 
 /**
  * Register a plugin for self-hosted updates.
@@ -46,6 +46,7 @@ $GLOBALS['um_updater_sdk_copies']['4.4.3'][] = __FILE__;
  *     @type string $update_url Full URL to the update.json manifest.
  *     @type string $server     Base URL of the update server (e.g. 'https://updatemachine.com').
  *     @type callable $usage_callback Optional callback returning flat usage data for telemetry.
+ *     @type array $feature_telemetry Optional versioned feature telemetry schema and callback.
  * }
  * @return Updater|null The updater instance, or null if already registered.
  */
@@ -67,6 +68,339 @@ function register( array $config ): ?Updater {
 } // end function_exists guard
 
 /**
+ * Resolves storage and identity for site-active and network-active plugins.
+ */
+if ( ! class_exists( __NAMESPACE__ . '\\Storage_Scope' ) ) {
+class Storage_Scope {
+
+	private bool $network;
+
+	public function __construct( string $basename ) {
+		$network_active = function_exists( 'is_multisite' ) && is_multisite()
+			? (array) get_site_option( 'active_sitewide_plugins', [] )
+			: [];
+		$this->network = isset( $network_active[ $basename ] );
+	}
+
+	public function is_network(): bool {
+		return $this->network;
+	}
+
+	public function force_network(): void {
+		$this->network = true;
+	}
+
+	public function get_option( string $key, $default = false ) {
+		return $this->network ? get_site_option( $key, $default ) : get_option( $key, $default );
+	}
+
+	public function update_option( string $key, $value ): void {
+		if ( $this->network ) {
+			update_site_option( $key, $value );
+			return;
+		}
+		update_option( $key, $value, false );
+	}
+
+	public function delete_option( string $key ): void {
+		if ( $this->network ) {
+			delete_site_option( $key );
+			return;
+		}
+		delete_option( $key );
+	}
+
+	public function get_transient( string $key ) {
+		return $this->network ? get_site_transient( $key ) : get_transient( $key );
+	}
+
+	public function set_transient( string $key, $value, int $ttl = 0 ): void {
+		if ( $this->network ) {
+			set_site_transient( $key, $value, $ttl );
+			return;
+		}
+		set_transient( $key, $value, $ttl );
+	}
+
+	public function delete_transient( string $key ): void {
+		if ( $this->network ) {
+			delete_site_transient( $key );
+			return;
+		}
+		delete_transient( $key );
+	}
+
+	public function site_url(): string {
+		return $this->network && function_exists( 'network_home_url' )
+			? untrailingslashit( network_home_url() )
+			: get_site_url();
+	}
+
+	public function site_name(): string {
+		if ( $this->network && function_exists( 'get_network' ) ) {
+			$network = get_network();
+			if ( is_object( $network ) && ! empty( $network->site_name ) ) {
+				return (string) $network->site_name;
+			}
+		}
+		return get_bloginfo( 'name' );
+	}
+
+	public function can_run_network_task(): bool {
+		return ! $this->network || ! function_exists( 'is_main_site' ) || is_main_site();
+	}
+
+	/**
+	 * Move durable main-site options into network storage and discard legacy caches.
+	 *
+	 * WordPress does not expose a transient's remaining TTL, so copying a legacy
+	 * transient would make it permanent. Network-scoped code regenerates these
+	 * caches with the correct TTL on demand.
+	 */
+	public function migrate_main_site_state( array $options, array $transients ): void {
+		if ( ! $this->network || ( function_exists( 'is_main_site' ) && ! is_main_site() ) ) {
+			return;
+		}
+
+		$missing = new \stdClass();
+		foreach ( $options as $key ) {
+			$value = get_option( $key, $missing );
+			if ( $missing === get_site_option( $key, $missing ) && $missing !== $value ) {
+				update_site_option( $key, $value );
+			}
+			if ( $missing !== $value ) {
+				delete_option( $key );
+			}
+		}
+
+		foreach ( $transients as $key ) {
+			delete_transient( $key );
+		}
+	}
+}
+} // end class_exists guard
+
+/**
+ * Validates a declarative feature schema and builds bounded snapshots.
+ */
+if ( ! class_exists( __NAMESPACE__ . '\\Feature_Telemetry' ) ) {
+class Feature_Telemetry {
+
+	private const MAX_FIELDS                  = 20;
+	private const MAX_KEY_LENGTH              = 32;
+	private const MAX_ENUM_VALUES             = 12;
+	private const MAX_ENUM_LENGTH             = 32;
+	private const MAX_SCHEMA_BYTES            = 4096;
+	private const MAX_VALUES_BYTES            = 2048;
+	private const MAX_ENVELOPE_BYTES          = 6144;
+	private const MAX_NUMBER_ABS              = 1000000000;
+	private const MAX_SCHEMA_VERSION          = 65535;
+	private const MAX_FLOAT_PRECISION         = 4;
+
+	private string $slug;
+	private array $config;
+
+	public function __construct( string $slug, array $config ) {
+		$this->slug   = $slug;
+		$this->config = $config;
+	}
+
+	/**
+	 * Return a schema + values envelope, or null when absent or invalid.
+	 */
+	public function collect(): ?array {
+		try {
+			$schema = $this->sanitize_schema();
+			if ( null === $schema ) {
+				return null;
+			}
+
+			$values   = [];
+			$callback = $this->config['callback'] ?? null;
+			if ( is_callable( $callback ) ) {
+				$values = call_user_func( $callback, $this->slug );
+			}
+
+			/**
+			 * Filter raw feature values before schema validation.
+			 *
+			 * @param mixed  $values Raw callback values, or [].
+			 * @param string $slug   Plugin slug being checked.
+			 * @param array  $schema Sanitized declarative schema.
+			 */
+			$values = apply_filters( 'um_updater_features_' . $this->slug, $values, $this->slug, $schema );
+			$values = $this->sanitize_values( $values, $schema['fields'] );
+			if ( null === $values ) {
+				return null;
+			}
+
+			$schema_json = wp_json_encode( [ 'fields' => $schema['fields'] ] );
+			$envelope    = [
+				'schema_version' => $schema['version'],
+				'schema_hash'    => hash( 'sha256', $schema_json ),
+				'schema'         => [ 'fields' => $schema['fields'] ],
+				'values'         => $values,
+			];
+
+			if ( strlen( wp_json_encode( $envelope ) ) > self::MAX_ENVELOPE_BYTES ) {
+				return null;
+			}
+
+			return $envelope;
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+	}
+
+	/**
+	 * Sanitize and canonicalize the plugin-provided schema.
+	 */
+	private function sanitize_schema(): ?array {
+		$version = $this->config['schema_version'] ?? null;
+		$fields  = $this->config['fields'] ?? null;
+		if ( ! is_int( $version ) || $version < 1 || $version > self::MAX_SCHEMA_VERSION ) {
+			return null;
+		}
+		if ( ! is_array( $fields ) || $this->is_list_array( $fields ) || empty( $fields ) || count( $fields ) > self::MAX_FIELDS ) {
+			return null;
+		}
+
+		$sanitized = [];
+		foreach ( $fields as $key => $definition ) {
+			if ( ! is_string( $key ) || strlen( $key ) > self::MAX_KEY_LENGTH || ! preg_match( '/^[a-z][a-z0-9_]*$/', $key ) ) {
+				return null;
+			}
+			if ( ! is_array( $definition ) || empty( $definition['type'] ) ) {
+				return null;
+			}
+
+			$type = $definition['type'];
+			if ( 'boolean' === $type ) {
+				$sanitized[ $key ] = [ 'type' => 'boolean' ];
+				continue;
+			}
+
+			if ( 'integer' === $type || 'float' === $type ) {
+				$min = $definition['min'] ?? null;
+				$max = $definition['max'] ?? null;
+				if ( ! $this->valid_number_bound( $min, $type ) || ! $this->valid_number_bound( $max, $type ) || $min > $max ) {
+					return null;
+				}
+				$field = [ 'type' => $type, 'min' => $min, 'max' => $max ];
+				if ( 'float' === $type ) {
+					$precision = $definition['precision'] ?? 2;
+					if ( ! is_int( $precision ) || $precision < 0 || $precision > self::MAX_FLOAT_PRECISION ) {
+						return null;
+					}
+					$scale = 10 ** $precision;
+					if ( abs( ( (float) $min * $scale ) - round( (float) $min * $scale ) ) > 0.0000001
+						|| abs( ( (float) $max * $scale ) - round( (float) $max * $scale ) ) > 0.0000001 ) {
+						return null;
+					}
+					$field['precision'] = $precision;
+				}
+				$sanitized[ $key ] = $field;
+				continue;
+			}
+
+			if ( 'enum' === $type ) {
+				$values = $definition['values'] ?? null;
+				if ( ! is_array( $values ) || ! $this->is_list_array( $values ) || empty( $values ) || count( $values ) > self::MAX_ENUM_VALUES ) {
+					return null;
+				}
+				$enum = [];
+				foreach ( $values as $value ) {
+					if ( ! is_string( $value ) || strlen( $value ) > self::MAX_ENUM_LENGTH || ! preg_match( '/^[A-Za-z0-9._+~-]+$/', $value ) ) {
+						return null;
+					}
+					$enum[] = $value;
+				}
+				$enum = array_values( array_unique( $enum ) );
+				if ( count( $enum ) !== count( $values ) ) {
+					return null;
+				}
+				sort( $enum, SORT_STRING );
+				$sanitized[ $key ] = [ 'type' => 'enum', 'values' => $enum ];
+				continue;
+			}
+
+			return null;
+		}
+
+		ksort( $sanitized, SORT_STRING );
+		if ( strlen( wp_json_encode( [ 'fields' => $sanitized ] ) ) > self::MAX_SCHEMA_BYTES ) {
+			return null;
+		}
+
+		return [ 'version' => $version, 'fields' => $sanitized ];
+	}
+
+	/**
+	 * Keep only values declared by the schema and matching the declared type.
+	 */
+	private function sanitize_values( $values, array $fields ): ?array {
+		if ( ! is_array( $values ) || $this->is_list_array( $values ) ) {
+			return null;
+		}
+
+		$sanitized = [];
+		foreach ( $fields as $key => $definition ) {
+			if ( ! array_key_exists( $key, $values ) ) {
+				continue;
+			}
+
+			$value = $values[ $key ];
+			switch ( $definition['type'] ) {
+				case 'boolean':
+					if ( is_bool( $value ) ) {
+						$sanitized[ $key ] = $value;
+					}
+					break;
+				case 'integer':
+					if ( is_int( $value ) && $value >= $definition['min'] && $value <= $definition['max'] ) {
+						$sanitized[ $key ] = $value;
+					}
+					break;
+				case 'float':
+					if ( ( is_int( $value ) || is_float( $value ) ) && is_finite( (float) $value ) && $value >= $definition['min'] && $value <= $definition['max'] ) {
+						$sanitized[ $key ] = round( (float) $value, $definition['precision'] );
+					}
+					break;
+				case 'enum':
+					if ( is_string( $value ) && in_array( $value, $definition['values'], true ) ) {
+						$sanitized[ $key ] = $value;
+					}
+					break;
+			}
+		}
+
+		if ( empty( $sanitized ) || strlen( wp_json_encode( $sanitized ) ) > self::MAX_VALUES_BYTES ) {
+			return null;
+		}
+
+		return $sanitized;
+	}
+
+	private function valid_number_bound( $value, string $type ): bool {
+		if ( 'integer' === $type && ! is_int( $value ) ) {
+			return false;
+		}
+		if ( 'float' === $type && ! is_int( $value ) && ! is_float( $value ) ) {
+			return false;
+		}
+		return is_finite( (float) $value ) && abs( (float) $value ) <= self::MAX_NUMBER_ABS;
+	}
+
+	private function is_list_array( array $value ): bool {
+		if ( [] === $value ) {
+			return false;
+		}
+		return array_keys( $value ) === range( 0, count( $value ) - 1 );
+	}
+}
+} // end class_exists guard
+
+/**
  * Handles update checks for a single plugin.
  */
 if ( ! class_exists( __NAMESPACE__ . '\\Updater' ) ) {
@@ -83,10 +417,12 @@ class Updater {
 	private string $challenge_transient;
 	private string $download_403_option;
 	private string $opportunistic_registration_option;
+	private Storage_Scope $scope;
 	private $usage_callback = null;
+	private ?Feature_Telemetry $feature_telemetry = null;
 
 	/** SDK version reported in telemetry — must match the file's @version. */
-	public const SDK_VERSION = '4.4.3';
+	public const SDK_VERSION = '4.5.0';
 
 	private const CHALLENGE_TTL             = 15 * MINUTE_IN_SECONDS;
 	private const REGISTRATION_RETRY_DELAYS = [
@@ -117,8 +453,22 @@ class Updater {
 		$this->challenge_transient = 'um_challenge_' . $this->slug;
 		$this->download_403_option = 'um_download_403_' . $this->slug;
 		$this->opportunistic_registration_option = 'um_registration_last_attempt_' . $this->slug;
+		$this->scope      = new Storage_Scope( $this->basename );
+		$this->scope->migrate_main_site_state(
+			[
+				$this->key_option,
+				$this->hash_expected_option,
+				'um_telemetry_optout_' . $this->slug,
+				$this->download_403_option,
+				$this->opportunistic_registration_option,
+			],
+			[ $this->cache_key, $this->challenge_transient ]
+		);
 		$this->usage_callback = $config['usage_callback'] ?? null;
-		$this->opt_out    = new Telemetry_Opt_Out( $this->slug );
+		if ( ! empty( $config['feature_telemetry'] ) && is_array( $config['feature_telemetry'] ) ) {
+			$this->feature_telemetry = new Feature_Telemetry( $this->slug, $config['feature_telemetry'] );
+		}
+		$this->opt_out    = new Telemetry_Opt_Out( $this->slug, $this->scope );
 	}
 
 	/**
@@ -143,15 +493,65 @@ class Updater {
 	 *     \UM\PluginUpdater\Updater::cleanup( 'my-plugin' );
 	 */
 	public static function cleanup( string $slug ): void {
-		delete_option( 'um_site_key_' . $slug );
-		delete_option( 'um_hash_expected_' . $slug );
-		delete_option( 'um_telemetry_optout_' . $slug );
-		delete_option( 'um_download_403_' . $slug );
-		delete_option( 'um_registration_last_attempt_' . $slug );
-		delete_transient( 'um_update_' . $slug );
-		delete_transient( 'um_challenge_' . $slug );
-		wp_unschedule_hook( 'um_updater_challenge_verify_' . $slug );
-		wp_unschedule_hook( 'um_updater_challenge_init_retry_' . $slug );
+		$options = [
+			'um_site_key_' . $slug,
+			'um_hash_expected_' . $slug,
+			'um_telemetry_optout_' . $slug,
+			'um_download_403_' . $slug,
+			'um_registration_last_attempt_' . $slug,
+		];
+		$transients = [ 'um_update_' . $slug, 'um_challenge_' . $slug ];
+		$clean_site = static function () use ( $slug, $options, $transients ): void {
+			foreach ( $options as $option ) {
+				delete_option( $option );
+			}
+			foreach ( $transients as $transient ) {
+				delete_transient( $transient );
+			}
+			wp_unschedule_hook( 'um_updater_challenge_verify_' . $slug );
+			wp_unschedule_hook( 'um_updater_challenge_init_retry_' . $slug );
+		};
+
+		$clean_site();
+		if ( function_exists( 'is_multisite' ) && is_multisite() && function_exists( 'get_sites' ) ) {
+			foreach ( get_sites( [ 'fields' => 'ids', 'number' => 0 ] ) as $site_id ) {
+				if ( function_exists( 'get_current_blog_id' ) && (int) $site_id === get_current_blog_id() ) {
+					continue;
+				}
+				switch_to_blog( (int) $site_id );
+				$clean_site();
+				restore_current_blog();
+			}
+		}
+
+		$current_network_id = function_exists( 'get_current_network_id' ) ? (int) get_current_network_id() : 0;
+		$clean_network = static function ( int $network_id = 0 ) use ( $options, $transients, $current_network_id ): void {
+			foreach ( $options as $option ) {
+				if ( 0 < $network_id && function_exists( 'delete_network_option' ) ) {
+					delete_network_option( $network_id, $option );
+				} elseif ( function_exists( 'delete_site_option' ) ) {
+					delete_site_option( $option );
+				}
+			}
+			foreach ( $transients as $transient ) {
+				if ( $network_id === $current_network_id && function_exists( 'delete_site_transient' ) ) {
+					delete_site_transient( $transient );
+				} elseif ( 0 < $network_id && function_exists( 'delete_network_option' ) ) {
+					delete_network_option( $network_id, '_site_transient_' . $transient );
+					delete_network_option( $network_id, '_site_transient_timeout_' . $transient );
+				} elseif ( function_exists( 'delete_site_transient' ) ) {
+					delete_site_transient( $transient );
+				}
+			}
+		};
+
+		if ( function_exists( 'is_multisite' ) && is_multisite() && function_exists( 'get_networks' ) ) {
+			foreach ( get_networks( [ 'fields' => 'ids', 'number' => 0 ] ) as $network_id ) {
+				$clean_network( (int) $network_id );
+			}
+		} else {
+			$clean_network();
+		}
 	}
 
 	/**
@@ -308,13 +708,27 @@ class Updater {
 	/**
 	 * Auto-register with the update server on plugin activation.
 	 */
-	public function on_activation(): void {
-		if ( empty( $this->server ) ) {
+	public function on_activation( bool $network_wide = false ): void {
+		if ( $network_wide && function_exists( 'is_multisite' ) && is_multisite() ) {
+			$this->scope->force_network();
+			$this->scope->migrate_main_site_state(
+				[
+					$this->key_option,
+					$this->hash_expected_option,
+					'um_telemetry_optout_' . $this->slug,
+					$this->download_403_option,
+					$this->opportunistic_registration_option,
+				],
+				[ $this->cache_key, $this->challenge_transient ]
+			);
+		}
+
+		if ( empty( $this->server ) || ! $this->scope->can_run_network_task() ) {
 			return;
 		}
 
 		// If we already have a key, don't re-register.
-		$existing = get_option( $this->key_option );
+		$existing = $this->scope->get_option( $this->key_option );
 		if ( ! empty( $existing ) ) {
 			return;
 		}
@@ -345,7 +759,7 @@ class Updater {
 		$plugin_data     = get_file_data( $this->file, [ 'Version' => 'Version' ] );
 		$current_version = $plugin_data['Version'] ?? '';
 
-		$site_url    = get_site_url();
+		$site_url    = $this->scope->site_url();
 		$plugin_slug = $this->slug;
 		$timestamp   = time();
 
@@ -364,7 +778,7 @@ class Updater {
 			],
 			'body'    => wp_json_encode( [
 				'site_url'       => $site_url,
-				'site_name'      => $this->opt_out->is_opted_out() ? '' : get_bloginfo( 'name' ),
+				'site_name'      => $this->opt_out->is_opted_out() ? '' : $this->scope->site_name(),
 				'plugin_slug'    => $plugin_slug,
 				'plugin_version' => $current_version,
 				'sdk_version'    => self::SDK_VERSION,
@@ -384,7 +798,7 @@ class Updater {
 
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( ! empty( $body['site_key'] ) ) {
-			update_option( $this->key_option, $body['site_key'], false );
+			$this->scope->update_option( $this->key_option, $body['site_key'] );
 		}
 	}
 
@@ -405,7 +819,7 @@ class Updater {
 				'Accept'       => 'application/json',
 			],
 			'body'    => wp_json_encode( [
-				'site_url'       => get_site_url(),
+				'site_url'       => $this->scope->site_url(),
 				'plugin_slug'    => $this->slug,
 				'plugin_version' => $current_version,
 				'sdk_version'    => self::SDK_VERSION,
@@ -422,7 +836,7 @@ class Updater {
 			return;
 		}
 
-		set_transient( $this->challenge_transient, [
+		$this->scope->set_transient( $this->challenge_transient, [
 			'id'             => (string) $body['challenge_id'],
 			'token'          => (string) $body['challenge_token'],
 			'retried'        => false,
@@ -437,7 +851,7 @@ class Updater {
 	 * Cron callback for delayed challenge-init retries.
 	 */
 	public function run_challenge_init_retry( int $attempt = 1 ): void {
-		if ( empty( $this->server ) || $this->get_site_key() || get_transient( $this->challenge_transient ) ) {
+		if ( ! $this->scope->can_run_network_task() || empty( $this->server ) || $this->get_site_key() || $this->scope->get_transient( $this->challenge_transient ) ) {
 			return;
 		}
 
@@ -453,7 +867,7 @@ class Updater {
 	 * token is worthless to anyone who can't also answer for this domain.
 	 */
 	public function register_challenge_route(): void {
-		$challenge = get_transient( $this->challenge_transient );
+		$challenge = $this->scope->get_transient( $this->challenge_transient );
 		if ( empty( $challenge['id'] ) || empty( $challenge['token'] ) ) {
 			return;
 		}
@@ -499,7 +913,11 @@ class Updater {
 	 * then gives up quietly — the site stays keyless, same as today.
 	 */
 	public function run_challenge_verify(): void {
-		$challenge = get_transient( $this->challenge_transient );
+		if ( ! $this->scope->can_run_network_task() ) {
+			return;
+		}
+
+		$challenge = $this->scope->get_transient( $this->challenge_transient );
 		if ( empty( $challenge['id'] ) ) {
 			$this->attempt_registration();
 			return;
@@ -524,8 +942,8 @@ class Updater {
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		if ( 201 === $code && ! empty( $body['site_key'] ) ) {
-			update_option( $this->key_option, $body['site_key'], false );
-			delete_transient( $this->challenge_transient );
+			$this->scope->update_option( $this->key_option, $body['site_key'] );
+			$this->scope->delete_transient( $this->challenge_transient );
 			return;
 		}
 
@@ -535,7 +953,7 @@ class Updater {
 		}
 
 		if ( 'expired' === ( $body['reason'] ?? '' ) ) {
-			delete_transient( $this->challenge_transient );
+			$this->scope->delete_transient( $this->challenge_transient );
 			$this->attempt_registration();
 			return;
 		}
@@ -546,7 +964,7 @@ class Updater {
 		}
 
 		// token_mismatch / anything else non-retryable — give up quietly.
-		delete_transient( $this->challenge_transient );
+		$this->scope->delete_transient( $this->challenge_transient );
 	}
 
 	/**
@@ -555,23 +973,23 @@ class Updater {
 	private function maybe_retry_challenge( array $challenge, $response = null ): void {
 		if ( null === $response ) {
 			if ( ! empty( $challenge['retried'] ) ) {
-				delete_transient( $this->challenge_transient );
+				$this->scope->delete_transient( $this->challenge_transient );
 				return;
 			}
 			$challenge['retried'] = true;
-			set_transient( $this->challenge_transient, $challenge, self::CHALLENGE_TTL );
+			$this->scope->set_transient( $this->challenge_transient, $challenge, self::CHALLENGE_TTL );
 			wp_schedule_single_event( time() + 10 * MINUTE_IN_SECONDS, 'um_updater_challenge_verify_' . $this->slug );
 			return;
 		}
 
 		$attempt = (int) ( $challenge['verify_attempt'] ?? 0 ) + 1;
 		if ( $attempt > self::MAX_REGISTRATION_RETRIES || ! $this->is_retryable_response( $response ) ) {
-			delete_transient( $this->challenge_transient );
+			$this->scope->delete_transient( $this->challenge_transient );
 			return;
 		}
 
 		$challenge['verify_attempt'] = $attempt;
-		set_transient( $this->challenge_transient, $challenge, self::CHALLENGE_TTL );
+		$this->scope->set_transient( $this->challenge_transient, $challenge, self::CHALLENGE_TTL );
 		wp_schedule_single_event( time() + $this->retry_delay( $attempt, $response ), 'um_updater_challenge_verify_' . $this->slug );
 	}
 
@@ -670,6 +1088,39 @@ class Updater {
 	}
 
 	/**
+	 * Build the versioned, typed feature telemetry envelope.
+	 */
+	private function collect_features(): ?array {
+		return null === $this->feature_telemetry ? null : $this->feature_telemetry->collect();
+	}
+
+	/**
+	 * Preserve the legacy telemetry filter as a field-removal hook only.
+	 *
+	 * This prevents plugins from adding free-form or secret-bearing fields to
+	 * the SDK request while retaining the documented site-name removal use case.
+	 */
+	private function filter_base_telemetry( array $telemetry ): ?array {
+		try {
+			$filtered = apply_filters( 'um_updater_telemetry', $telemetry, $this->slug );
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+
+		if ( ! is_array( $filtered ) ) {
+			return null;
+		}
+
+		foreach ( array_keys( $telemetry ) as $key ) {
+			if ( ! array_key_exists( $key, $filtered ) || $filtered[ $key ] !== $telemetry[ $key ] ) {
+				unset( $telemetry[ $key ] );
+			}
+		}
+
+		return $telemetry;
+	}
+
+	/**
 	 * Sanitize usage telemetry to the server contract.
 	 *
 	 * @param mixed $usage Raw callback/filter return.
@@ -727,23 +1178,23 @@ class Updater {
 	 * Get the stored site key for this plugin.
 	 */
 	private function get_site_key(): string {
-		return (string) get_option( $this->key_option, '' );
+		return (string) $this->scope->get_option( $this->key_option, '' );
 	}
 
 	/**
 	 * Opportunistically re-enter registration from update checks.
 	 */
 	private function maybe_attempt_opportunistic_registration(): void {
-		if ( empty( $this->server ) || $this->get_site_key() || get_transient( $this->challenge_transient ) ) {
+		if ( ! $this->scope->can_run_network_task() || empty( $this->server ) || $this->get_site_key() || $this->scope->get_transient( $this->challenge_transient ) ) {
 			return;
 		}
 
-		$last_attempt = (int) get_option( $this->opportunistic_registration_option, 0 );
+		$last_attempt = (int) $this->scope->get_option( $this->opportunistic_registration_option, 0 );
 		if ( $last_attempt > 0 && ( time() - $last_attempt ) < DAY_IN_SECONDS ) {
 			return;
 		}
 
-		update_option( $this->opportunistic_registration_option, time(), false );
+		$this->scope->update_option( $this->opportunistic_registration_option, time() );
 		$this->attempt_registration();
 	}
 
@@ -758,7 +1209,7 @@ class Updater {
 		$download_url = add_query_arg( 'key', $site_key, $download_url );
 
 		// site_url is auth identity for domain-locked keys, not telemetry.
-		return add_query_arg( 'site_url', get_site_url(), $download_url );
+		return add_query_arg( 'site_url', $this->scope->site_url(), $download_url );
 	}
 
 	/**
@@ -939,15 +1390,15 @@ class Updater {
 			return $reply;
 		}
 
-		$cached = get_transient( $this->cache_key );
+		$cached = $this->scope->get_transient( $this->cache_key );
 
-		$hash_expected = (bool) get_option( $this->hash_expected_option, false );
+		$hash_expected = (bool) $this->scope->get_option( $this->hash_expected_option, false );
 
 		// WordPress can retain its update offer longer than our manifest cache.
 		// Refresh an expired cache before deciding whether the hash disappeared.
 		if ( false === $cached ) {
 			$cached        = $this->fetch_update_data();
-			$hash_expected = (bool) get_option( $this->hash_expected_option, false );
+			$hash_expected = (bool) $this->scope->get_option( $this->hash_expected_option, false );
 		}
 
 		if ( ! is_object( $cached ) ) {
@@ -993,7 +1444,7 @@ class Updater {
 		}
 
 		if ( ! $hash_expected ) {
-			update_option( $this->hash_expected_option, 1, false );
+			$this->scope->update_option( $this->hash_expected_option, 1 );
 		}
 
 		// download_url() accepts no request arguments, so pin TLS verification
@@ -1016,7 +1467,7 @@ class Updater {
 			return $tmp;
 		}
 
-		delete_option( $this->download_403_option );
+		$this->scope->delete_option( $this->download_403_option );
 
 		// Compute and compare SHA-256.
 		$actual = @hash_file( 'sha256', $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
@@ -1061,15 +1512,15 @@ class Updater {
 			return;
 		}
 
-		$count = (int) get_option( $this->download_403_option, 0 ) + 1;
+		$count = (int) $this->scope->get_option( $this->download_403_option, 0 ) + 1;
 		if ( $count < 3 ) {
-			update_option( $this->download_403_option, $count, false );
+			$this->scope->update_option( $this->download_403_option, $count );
 			return;
 		}
 
-		delete_option( $this->download_403_option );
-		delete_option( $this->key_option );
-		delete_transient( $this->cache_key );
+		$this->scope->delete_option( $this->download_403_option );
+		$this->scope->delete_option( $this->key_option );
+		$this->scope->delete_transient( $this->cache_key );
 		$this->attempt_registration();
 	}
 
@@ -1119,10 +1570,10 @@ class Updater {
 		}
 
 		if ( $force ) {
-			delete_transient( $this->cache_key );
+			$this->scope->delete_transient( $this->cache_key );
 		}
 
-		$cached = get_transient( $this->cache_key );
+		$cached = $this->scope->get_transient( $this->cache_key );
 
 		if ( false !== $cached ) {
 			if ( 'error' === $cached ) {
@@ -1147,28 +1598,29 @@ class Updater {
 		 */
 		$telemetry_disabled = (bool) apply_filters( 'um_updater_disable_telemetry', false, $this->slug );
 
-		/**
-		 * Filter the telemetry payload sent with update checks.
-		 *
-		 * @param array  $telemetry Payload: site_url, site_name, plugin_version,
-		 *                          sdk_version, php_version, wp_version,
-		 *                          environment_type.
-		 * @param string $slug      Plugin slug being checked.
-		 */
-		$telemetry = apply_filters( 'um_updater_telemetry', [
-			'site_url'         => get_site_url(),
-			'site_name'        => get_bloginfo( 'name' ),
+		$telemetry          = $this->filter_base_telemetry( [
+			'site_url'         => $this->scope->site_url(),
+			'site_name'        => $this->scope->site_name(),
 			'plugin_version'   => $current_version,
 			'sdk_version'      => self::SDK_VERSION,
 			'php_version'      => PHP_VERSION,
 			'wp_version'       => get_bloginfo( 'version' ),
 			'environment_type' => function_exists( 'wp_get_environment_type' ) ? wp_get_environment_type() : '',
-		], $this->slug );
+			'is_multisite'     => function_exists( 'is_multisite' ) && is_multisite(),
+			'activation_scope' => $this->scope->is_network() ? 'network' : 'site',
+		] );
+		$filter_failed      = null === $telemetry;
+		$telemetry          = $telemetry ?? [];
 
-		if ( ! $telemetry_disabled ) {
+		if ( ! $telemetry_disabled && ! $filter_failed ) {
 			$usage = $this->collect_usage();
 			if ( null !== $usage ) {
 				$telemetry['usage'] = $usage;
+			}
+
+			$features = $this->collect_features();
+			if ( null !== $features ) {
+				$telemetry['features'] = $features;
 			}
 		}
 
@@ -1188,7 +1640,7 @@ class Updater {
 			$license_key = $this->license_client->decrypt_key();
 			if ( '' !== $license_key ) {
 				$request_headers['X-License-Key'] = $license_key;
-				$request_headers['X-Site-URL']    = get_site_url();
+				$request_headers['X-Site-URL']    = $this->scope->site_url();
 			}
 		}
 
@@ -1200,7 +1652,7 @@ class Updater {
 			$license_key = $this->license_client->decrypt_key();
 			if ( '' !== $license_key ) {
 				$get_headers['X-License-Key'] = $license_key;
-				$get_headers['X-Site-URL']    = get_site_url();
+				$get_headers['X-Site-URL']    = $this->scope->site_url();
 			}
 		}
 
@@ -1212,7 +1664,7 @@ class Updater {
 			'timeout'   => 10,
 			'sslverify' => true,
 			'headers'   => $request_headers,
-			'body'      => wp_json_encode( $telemetry_disabled ? (object) [] : $telemetry ),
+			'body'      => wp_json_encode( ( $telemetry_disabled || $filter_failed ) ? (object) [] : $telemetry ),
 		] );
 
 		// Fallback to GET if POST fails (e.g. server doesn't support POST yet).
@@ -1225,14 +1677,14 @@ class Updater {
 		}
 
 		if ( is_wp_error( $response ) ) {
-			set_transient( $this->cache_key, 'error', self::ERROR_TTL );
+			$this->scope->set_transient( $this->cache_key, 'error', self::ERROR_TTL );
 			return null;
 		}
 
 		$code = wp_remote_retrieve_response_code( $response );
 
 		if ( 200 !== $code ) {
-			set_transient( $this->cache_key, 'error', self::ERROR_TTL );
+			$this->scope->set_transient( $this->cache_key, 'error', self::ERROR_TTL );
 			return null;
 		}
 
@@ -1240,14 +1692,14 @@ class Updater {
 		$data = json_decode( $body );
 
 		if ( ! $data || empty( $data->version ) ) {
-			set_transient( $this->cache_key, 'error', self::ERROR_TTL );
+			$this->scope->set_transient( $this->cache_key, 'error', self::ERROR_TTL );
 			return null;
 		}
 
 		// Record valid hash support as soon as it is observed. Waiting until an
 		// install begins would leave a downgrade window between update checks.
 		if ( isset( $data->sha256 ) && '' !== $this->normalize_sha256( $data->sha256 ) ) {
-			update_option( $this->hash_expected_option, 1, false );
+			$this->scope->update_option( $this->hash_expected_option, 1 );
 		}
 
 		// Forward server-side warnings to the license client (e.g. "payment past due").
@@ -1255,7 +1707,7 @@ class Updater {
 			$this->license_client->store_update_warning( $data->warning );
 		}
 
-		set_transient( $this->cache_key, $data, self::CACHE_TTL );
+		$this->scope->set_transient( $this->cache_key, $data, self::CACHE_TTL );
 
 		return $data;
 	}
@@ -1281,10 +1733,12 @@ class Telemetry_Opt_Out {
 
 	private string $slug;
 	private string $option;
+	private Storage_Scope $scope;
 
-	public function __construct( string $slug ) {
+	public function __construct( string $slug, Storage_Scope $scope ) {
 		$this->slug   = $slug;
 		$this->option = 'um_telemetry_optout_' . $slug;
+		$this->scope  = $scope;
 	}
 
 	/**
@@ -1300,7 +1754,7 @@ class Telemetry_Opt_Out {
 	 * Whether this site has opted out of telemetry for this plugin.
 	 */
 	public function is_opted_out(): bool {
-		return (bool) get_option( $this->option, false );
+		return (bool) $this->scope->get_option( $this->option, false );
 	}
 
 	/**
@@ -1309,8 +1763,8 @@ class Telemetry_Opt_Out {
 	 * honors the new preference immediately.
 	 */
 	public function set_opted_out( bool $opted_out ): void {
-		update_option( $this->option, $opted_out ? 1 : 0 );
-		delete_transient( 'um_update_' . $this->slug );
+		$this->scope->update_option( $this->option, $opted_out ? 1 : 0 );
+		$this->scope->delete_transient( 'um_update_' . $this->slug );
 	}
 
 	/**
@@ -1357,7 +1811,8 @@ class Telemetry_Opt_Out {
 		if ( ! isset( $_POST[ $nonce_key ] ) ) {
 			return;
 		}
-		if ( ! current_user_can( 'manage_options' ) ) {
+		$capability = $this->scope->is_network() ? 'manage_network_options' : 'manage_options';
+		if ( ! current_user_can( $capability ) ) {
 			return;
 		}
 		$nonce = sanitize_text_field( wp_unslash( $_POST[ $nonce_key ] ) );

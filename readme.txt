@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.6.3
+Stable tag: 2.6.4
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -49,15 +49,24 @@ The updater sends a small telemetry payload to the update server:
 | `php_version` | Yes | No |
 | `wp_version` | Yes | No |
 | `environment_type` | Yes | No |
+| `is_multisite` | Yes | No |
+| `activation_scope` | Yes | No |
+| `features` | Optional bounded feature-state snapshot | No |
 | `usage` | Optional, plugin-provided | No |
 
 That is the complete list. No admin email (removed in um-updater v4.1.0 because the site key already identifies the install), no locale, and no user data. `usage` is absent unless this plugin explicitly opts in with a flat usage snapshot. Zero-config challenge registration sends only `site_url`, `plugin_slug`, `plugin_version`, and `sdk_version`; it does not send the site name.
 
 Optional usage snapshots are for plugin feature flags/counters, not user data. The SDK keeps at most 20 keys, allows only short scalar values, caps the serialized object at 2KB, and drops invalid usage data instead of sending it.
 
+Little Lightbox reports a typed snapshot of its selected mode, caption source, gallery and animation settings, recipe-card and Jump to Recipe integrations, ad-layering toggle, and trigger icon size. The snapshot contains only booleans and declared enum values. It never includes captions, image details, posts, selectors, URLs, keys, or other free-form values.
+
 Site owners can disable the telemetry payload from the plugin settings screen. Update checks still happen, but the request body is empty; the update server sees only what any HTTP request carries, plus the auth headers needed to serve the manifest.
 
 == Changelog ==
+
+= 2.6.4 =
+* Added privacy-bounded feature-state telemetry for the reviewed Little Lightbox settings schema.
+* Updated the bundled Update Machine updater SDK to v4.5.0.
 
 = 2.6.3 =
 * Security: Updated the bundled Update Machine updater SDK to v4.4.3 with stricter TLS and ZIP integrity enforcement.
