@@ -4,7 +4,7 @@ Tags: lightbox, images, gallery, photography, food blog
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.6.4
+Stable tag: 2.6.5
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -63,6 +63,9 @@ Little Lightbox reports a typed snapshot of its selected mode, caption source, g
 Site owners can disable the telemetry payload from the plugin settings screen. Update checks still happen, but the request body is empty; the update server sees only what any HTTP request carries, plus the auth headers needed to serve the manifest.
 
 == Changelog ==
+
+= 2.6.5 =
+* Fixed zero-config registration on REST and cron requests so free installs can receive a site key and submit authorized telemetry.
 
 = 2.6.4 =
 * Added privacy-bounded feature-state telemetry for the reviewed Little Lightbox settings schema.

@@ -3,7 +3,7 @@
  * Plugin Name: This Little Lightbox of Mine
  * Plugin URI:  https://github.com/mikezielonkadotcom/little-lightbox
  * Description: Lightweight image lightbox for WordPress with CSS-Only and Enhanced modes, gallery browsing, captions, swipe, keyboard navigation, and WPRM integration.
- * Version:     2.6.4
+ * Version:     2.6.5
  * Author:      Mike Zielonka Ventures
  * Author URI:  https://mikezielonka.com
  * License:     GPL-2.0-or-later
@@ -16,7 +16,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'MZV_LB_VERSION', '2.6.4' );
+define( 'MZV_LB_VERSION', '2.6.5' );
 define( 'MZV_LB_FILE', __FILE__ );
 define( 'MZV_LB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'MZV_LB_URL', plugin_dir_url( __FILE__ ) );
@@ -28,6 +28,14 @@ require_once MZV_LB_DIR . 'includes/class-admin.php';
 require_once MZV_LB_DIR . 'includes/class-feature-telemetry.php';
 require_once MZV_LB_DIR . 'includes/um-updater.php';
 
+$GLOBALS['little_lightbox_updater'] = \UM\PluginUpdater\register( [
+	'file'              => MZV_LB_FILE,
+	'slug'              => 'little-lightbox',
+	'update_url'        => 'https://updatemachine.com/little-lightbox/update.json',
+	'server'            => 'https://updatemachine.com',
+	'feature_telemetry' => MZV_LB_Feature_Telemetry::config(),
+] );
+
 add_action( 'init', function() {
 	$settings = new MZV_LB_Settings();
 	$settings->hooks();
@@ -37,16 +45,6 @@ add_action( 'init', function() {
 
 	$admin = new MZV_LB_Admin( $settings );
 	$admin->hooks();
-
-	if ( is_admin() ) {
-		$GLOBALS['little_lightbox_updater'] = \UM\PluginUpdater\register( [
-			'file'              => MZV_LB_FILE,
-			'slug'              => 'little-lightbox',
-			'update_url'        => 'https://updatemachine.com/little-lightbox/update.json',
-			'server'            => 'https://updatemachine.com',
-			'feature_telemetry' => MZV_LB_Feature_Telemetry::config(),
-		] );
-	}
 } );
 
 // Activation hook for WPRM conflict check.
