@@ -22,7 +22,7 @@
  *     $updater->set_license_client( $license_client );
  *
  * @package UM\PluginUpdater
- * @version 4.8.0
+ * @version 4.9.0
  */
 
 namespace UM\PluginUpdater;
@@ -35,7 +35,47 @@ defined( 'ABSPATH' ) || exit;
 // copy's classes win the class_exists race below — so the copy that DOES boot
 // can detect version skew and warn (see Updater::maybe_warn_version_skew).
 // Keep this literal in sync with @version.
-$GLOBALS['um_updater_sdk_copies']['4.8.0'][] = __FILE__;
+$GLOBALS['um_updater_sdk_copies']['4.9.0'][] = __FILE__;
+
+/**
+ * Return a canonical HTTP(S) origin, including its effective port.
+ *
+ * URL credentials are never valid SDK endpoints. Normalizing the default
+ * ports also keeps https://example.com and https://example.com:443 equivalent
+ * without treating a non-default port as the same security origin.
+ *
+ * @return array{scheme:string,host:string,port:int}|null
+ */
+if ( ! function_exists( __NAMESPACE__ . '\normalized_url_origin' ) ) {
+function normalized_url_origin( $url ): ?array {
+	if ( ! is_string( $url ) || '' === $url ) {
+		return null;
+	}
+
+	$parts = parse_url( $url );
+	if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] )
+		|| isset( $parts['user'] ) || isset( $parts['pass'] ) ) {
+		return null;
+	}
+
+	$scheme = strtolower( (string) $parts['scheme'] );
+	if ( ! in_array( $scheme, [ 'http', 'https' ], true ) ) {
+		return null;
+	}
+
+	$host = trim( strtolower( rtrim( (string) $parts['host'], '.' ) ), '[]' );
+	$port = isset( $parts['port'] ) ? (int) $parts['port'] : ( 'https' === $scheme ? 443 : 80 );
+	if ( '' === $host || $port < 1 || $port > 65535 ) {
+		return null;
+	}
+
+	return [
+		'scheme' => $scheme,
+		'host'   => $host,
+		'port'   => $port,
+	];
+}
+} // end function_exists guard
 
 /**
  * Validate an SDK endpoint before any hooks or requests are registered.
@@ -45,18 +85,13 @@ $GLOBALS['um_updater_sdk_copies']['4.8.0'][] = __FILE__;
  */
 if ( ! function_exists( __NAMESPACE__ . '\\is_allowed_endpoint' ) ) {
 function is_allowed_endpoint( $url, bool $allow_insecure_localhost = false ): bool {
-	if ( ! is_string( $url ) || '' === $url ) {
+	$origin = normalized_url_origin( $url );
+	if ( null === $origin ) {
 		return false;
 	}
 
-	$parts = parse_url( $url );
-	if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] )
-		|| isset( $parts['user'] ) || isset( $parts['pass'] ) ) {
-		return false;
-	}
-
-	$scheme = strtolower( (string) $parts['scheme'] );
-	$host   = trim( strtolower( rtrim( (string) $parts['host'], '.' ) ), '[]' );
+	$scheme = $origin['scheme'];
+	$host   = $origin['host'];
 	if ( 'https' === $scheme ) {
 		return true;
 	}
@@ -131,8 +166,11 @@ function register( array $config ): ?Updater {
 	}
 
 	$allow_insecure = true === ( $config['allow_insecure_localhost'] ?? false );
+	$update_origin   = normalized_url_origin( $config['update_url'] ?? '' );
+	$server_origin   = normalized_url_origin( $config['server'] ?? '' );
 	if ( ! is_allowed_endpoint( $config['update_url'] ?? '', $allow_insecure )
-		|| ! is_allowed_endpoint( $config['server'] ?? '', $allow_insecure ) ) {
+		|| ! is_allowed_endpoint( $config['server'] ?? '', $allow_insecure )
+		|| $update_origin !== $server_origin ) {
 		return null;
 	}
 
@@ -476,6 +514,115 @@ class Storage_Scope {
 			return;
 		}
 		delete_transient( $key );
+	}
+
+	/**
+	 * Acquire a short option-backed lock with atomic stale-lock replacement.
+	 *
+	 * Options provide a shared primitive even when no persistent object cache is
+	 * installed. The compare-and-swap prevents two workers from both reclaiming
+	 * a lock left behind by a crashed request.
+	 */
+	public function acquire_lock( string $key, int $ttl ): ?string {
+		try {
+			$token = bin2hex( random_bytes( 16 ) );
+		} catch ( \Throwable $error ) {
+			$token = hash( 'sha256', uniqid( $key, true ) );
+		}
+		$value = ( time() + max( 1, $ttl ) ) . '|' . $token;
+		$added = $this->network
+			? add_site_option( $key, $value )
+			: add_option( $key, $value, '', false );
+		if ( $added ) {
+			return $value;
+		}
+
+		$current = $this->get_option( $key, '' );
+		$parts   = is_string( $current ) ? explode( '|', $current, 2 ) : [];
+		if ( 2 === count( $parts ) && (int) $parts[0] > time() ) {
+			return null;
+		}
+
+		return $this->compare_and_swap_option( $key, $current, $value ) ? $value : null;
+	}
+
+	/**
+	 * Release only the lock value this worker acquired.
+	 */
+	public function release_lock( string $key, string $value ): void {
+		$this->compare_and_delete_option( $key, $value );
+	}
+
+	private function compare_and_swap_option( string $key, $expected, string $replacement ): bool {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'query' ) ) {
+			return false;
+		}
+
+		if ( $this->network ) {
+			$network_id = function_exists( 'get_current_network_id' ) ? get_current_network_id() : 1;
+			$result = $wpdb->query( $wpdb->prepare(
+				"UPDATE {$wpdb->sitemeta} SET meta_value = %s WHERE site_id = %d AND meta_key = %s AND meta_value = %s",
+				$replacement,
+				$network_id,
+				$key,
+				maybe_serialize( $expected )
+			) );
+		} else {
+			$result = $wpdb->query( $wpdb->prepare(
+				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+				$replacement,
+				$key,
+				maybe_serialize( $expected )
+			) );
+		}
+
+		if ( 1 === $result ) {
+			$this->clear_option_cache( $key );
+			return true;
+		}
+		return false;
+	}
+
+	private function compare_and_delete_option( string $key, string $expected ): void {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'query' ) ) {
+			return;
+		}
+
+		if ( $this->network ) {
+			$network_id = function_exists( 'get_current_network_id' ) ? get_current_network_id() : 1;
+			$result = $wpdb->query( $wpdb->prepare(
+				"DELETE FROM {$wpdb->sitemeta} WHERE site_id = %d AND meta_key = %s AND meta_value = %s",
+				$network_id,
+				$key,
+				$expected
+			) );
+		} else {
+			$result = $wpdb->query( $wpdb->prepare(
+				"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+				$key,
+				$expected
+			) );
+		}
+
+		if ( 1 === $result ) {
+			$this->clear_option_cache( $key );
+		}
+	}
+
+	private function clear_option_cache( string $key ): void {
+		if ( ! function_exists( 'wp_cache_delete' ) ) {
+			return;
+		}
+		if ( $this->network ) {
+			$network_id = function_exists( 'get_current_network_id' ) ? get_current_network_id() : 1;
+			wp_cache_delete( $network_id . ':' . $key, 'site-options' );
+			return;
+		}
+		wp_cache_delete( $key, 'options' );
+		wp_cache_delete( 'alloptions', 'options' );
+		wp_cache_delete( 'notoptions', 'options' );
 	}
 
 	public function site_url(): string {
@@ -1200,18 +1347,24 @@ class Updater {
 	private string $slug;
 	private string $update_url;
 	private string $server;
+	private bool $allow_insecure_localhost = false;
 	private string $basename;
 	private string $cache_key;
+	private string $fetch_lock_key;
 	private string $key_option;
 	private string $hash_expected_option;
 	private string $challenge_transient;
 	private string $challenge_expired_option;
+	private string $registration_lock_option;
 	private string $download_403_option;
 	private string $opportunistic_registration_option;
+	private string $diagnostics_option;
 	private Storage_Scope $scope;
 	private $usage_callback = null;
 	private ?Feature_Telemetry $feature_telemetry = null;
 	private ?Activity_Telemetry $activity_telemetry = null;
+	/** @var bool Prevent force-check from deleting a freshly populated cache more than once per request. */
+	private bool $force_refresh_started = false;
 
 	/** @var array|null Normalized add-on parent registration, or null for ordinary plugins. */
 	private ?array $parent_config = null;
@@ -1229,7 +1382,7 @@ class Updater {
 	private bool $pending_rollback_network = false;
 
 	/** SDK version reported in telemetry — must match the file's @version. */
-	public const SDK_VERSION = '4.8.0';
+	public const SDK_VERSION = '4.9.0';
 
 	private const CHALLENGE_TTL             = 15 * MINUTE_IN_SECONDS;
 	private const CHALLENGE_EXPIRED_WINDOW  = DAY_IN_SECONDS;
@@ -1243,6 +1396,11 @@ class Updater {
 	];
 	private const MAX_REGISTRATION_RETRIES = 3;
 	private const MAX_EXPIRED_CHALLENGES   = 3;
+	private const REGISTRATION_LOCK_TTL    = MINUTE_IN_SECONDS;
+
+	/** @var int Re-entrant lock depth within one updater instance/request. */
+	private int $registration_lock_depth = 0;
+	private array $registration_lock_value = [];
 
 	/** @var Telemetry_Opt_Out Per-plugin telemetry preference compatibility wrapper. */
 	private Telemetry_Opt_Out $opt_out;
@@ -1252,20 +1410,29 @@ class Updater {
 
 	private const CACHE_TTL = HOUR_IN_SECONDS;
 	private const ERROR_TTL = 10 * MINUTE_IN_SECONDS;
+	private const MAX_MANIFEST_BYTES = 256 * 1024;
+	private const MAX_DOWNLOAD_URL_LENGTH = 2048;
+	private const MAX_SHA256_LENGTH = 128;
+	private const MAX_WARNING_LENGTH = 1024;
+	private const FETCH_LOCK_TTL = 30;
 
 	public function __construct( array $config ) {
 		$this->file       = $config['file'];
 		$this->slug       = $config['slug'];
 		$this->update_url = $config['update_url'];
 		$this->server     = rtrim( $config['server'] ?? '', '/' );
+		$this->allow_insecure_localhost = true === ( $config['allow_insecure_localhost'] ?? false );
 		$this->basename   = plugin_basename( $this->file );
 		$this->cache_key  = 'um_update_' . $this->slug;
+		$this->fetch_lock_key = 'um_update_fetch_lock_' . $this->slug;
 		$this->key_option = 'um_site_key_' . $this->slug;
 		$this->hash_expected_option = 'um_hash_expected_' . $this->slug;
 		$this->challenge_transient = 'um_challenge_' . $this->slug;
 		$this->challenge_expired_option = 'um_challenge_expired_' . $this->slug;
+		$this->registration_lock_option = 'um_registration_lock_' . $this->slug;
 		$this->download_403_option = 'um_download_403_' . $this->slug;
 		$this->opportunistic_registration_option = 'um_registration_last_attempt_' . $this->slug;
+		$this->diagnostics_option = 'um_update_diagnostics_' . $this->slug;
 		$this->scope      = new Storage_Scope( $this->basename );
 		$this->scope->migrate_main_site_state(
 			[
@@ -1277,6 +1444,8 @@ class Updater {
 				$this->challenge_expired_option,
 				$this->download_403_option,
 				$this->opportunistic_registration_option,
+				$this->fetch_lock_key,
+				$this->diagnostics_option,
 			],
 			[ $this->cache_key, $this->challenge_transient ]
 		);
@@ -1360,6 +1529,7 @@ class Updater {
 	 *     \UM\PluginUpdater\Updater::cleanup( 'my-plugin' );
 	 */
 	public static function cleanup( string $slug ): void {
+		unset( $GLOBALS['um_updater_diagnostic_instances'][ $slug ] );
 		$options = [
 			'um_site_key_' . $slug,
 			'um_hash_expected_' . $slug,
@@ -1367,8 +1537,11 @@ class Updater {
 			'um_telemetry_optout_' . $slug,
 			'um_activity_telemetry_' . $slug,
 			'um_challenge_expired_' . $slug,
+			'um_registration_lock_' . $slug,
 			'um_download_403_' . $slug,
 			'um_registration_last_attempt_' . $slug,
+			'um_update_fetch_lock_' . $slug,
+			'um_update_diagnostics_' . $slug,
 		];
 		$transients = [ 'um_update_' . $slug, 'um_challenge_' . $slug ];
 		$clean_site = static function () use ( $slug, $options, $transients ): void {
@@ -1380,6 +1553,7 @@ class Updater {
 			}
 			wp_unschedule_hook( 'um_updater_challenge_verify_' . $slug );
 			wp_unschedule_hook( 'um_updater_challenge_init_retry_' . $slug );
+			wp_unschedule_hook( 'um_updater_opportunistic_registration_' . $slug );
 			self::remove_global_site_registration( $slug );
 		};
 
@@ -1560,6 +1734,7 @@ class Updater {
 	 */
 	public function init(): void {
 		$this->register_global_site_state();
+		$GLOBALS['um_updater_diagnostic_instances'][ $this->slug ] = $this;
 
 		add_filter( 'pre_set_site_transient_update_plugins', [ $this, 'check_update' ] );
 		add_filter( 'plugins_api', [ $this, 'plugin_info' ], 10, 3 );
@@ -1581,12 +1756,18 @@ class Updater {
 		// and handle settings-form saves on admin_init.
 		$this->opt_out->register_hooks();
 
+		if ( empty( $GLOBALS['um_updater_diagnostics_hooked'] ) ) {
+			$GLOBALS['um_updater_diagnostics_hooked'] = true;
+			add_filter( 'debug_information', [ __CLASS__, 'filter_debug_information' ] );
+		}
+
 		// Zero-config registration plumbing: the challenge route only
 		// registers while a challenge transient exists, and the verify
 		// event only fires after begin_challenge_registration schedules it.
 		add_action( 'rest_api_init', [ $this, 'register_challenge_route' ] );
 		add_action( 'um_updater_challenge_verify_' . $this->slug, [ $this, 'run_challenge_verify' ] );
 		add_action( 'um_updater_challenge_init_retry_' . $this->slug, [ $this, 'run_challenge_init_retry' ] );
+		add_action( 'um_updater_opportunistic_registration_' . $this->slug, [ $this, 'run_opportunistic_registration' ] );
 
 		// Version-skew watchdog, hooked once no matter how many plugins
 		// register an updater.
@@ -1599,6 +1780,142 @@ class Updater {
 		// Auto-register on activation if there's no key yet — HMAC when a
 		// shared secret is configured, challenge–response otherwise.
 		register_activation_hook( $this->file, [ $this, 'on_activation' ] );
+	}
+
+	/**
+	 * Add redacted, local-only updater state to WordPress Site Health.
+	 *
+	 * This callback reads options, transients, and cron only. It must never call
+	 * fetch_update_data(), registration clients, license callbacks, or HTTP APIs.
+	 */
+	public static function filter_debug_information( array $debug ): array {
+		$fields = [
+			'winning_sdk_version' => self::diagnostic_field( __( 'Winning SDK version', 'um-updater' ), self::SDK_VERSION ),
+			'winning_sdk_path'    => self::diagnostic_field( __( 'Winning SDK path', 'um-updater' ), __FILE__ ),
+		];
+
+		$copy_lines = [];
+		$copies     = is_array( $GLOBALS['um_updater_sdk_copies'] ?? null ) ? $GLOBALS['um_updater_sdk_copies'] : [];
+		uksort( $copies, 'version_compare' );
+		foreach ( $copies as $version => $paths ) {
+			$clean_paths = array_values( array_unique( array_filter( (array) $paths, 'is_string' ) ) );
+			sort( $clean_paths, SORT_STRING );
+			$copy_lines[] = (string) $version . ': ' . implode( ', ', $clean_paths );
+		}
+		$fields['bundled_sdk_copies'] = self::diagnostic_field(
+			__( 'Bundled SDK copies', 'um-updater' ),
+			$copy_lines ? implode( '; ', $copy_lines ) : __( 'None recorded', 'um-updater' )
+		);
+
+		$instances = is_array( $GLOBALS['um_updater_diagnostic_instances'] ?? null ) ? $GLOBALS['um_updater_diagnostic_instances'] : [];
+		ksort( $instances, SORT_STRING );
+		foreach ( $instances as $slug => $updater ) {
+			if ( ! $updater instanceof self ) {
+				continue;
+			}
+			$prefix   = 'plugin_' . sanitize_key( (string) $slug ) . '_' . substr( hash( 'sha256', (string) $slug ), 0, 8 );
+			$snapshot = $updater->diagnostic_snapshot();
+			foreach ( $snapshot as $name => $value ) {
+				$fields[ $prefix . '_' . $name ] = self::diagnostic_field(
+					sprintf( '%s — %s', (string) $slug, str_replace( '_', ' ', (string) $name ) ),
+					$value
+				);
+			}
+		}
+
+		$debug['um_updater'] = [
+			'label'       => __( 'Update Machine SDK', 'um-updater' ),
+			'description' => __( 'Local updater state only. Credentials, challenge tokens, and package URLs are excluded.', 'um-updater' ),
+			'show_count'  => true,
+			'fields'      => $fields,
+		];
+		return $debug;
+	}
+
+	private static function diagnostic_field( string $label, string $value ): array {
+		return [
+			'label' => $label,
+			'value' => $value,
+			'debug' => $value,
+		];
+	}
+
+	/**
+	 * Return only bounded, non-secret state for one registered plugin.
+	 *
+	 * @return array<string,string>
+	 */
+	private function diagnostic_snapshot(): array {
+		$state = $this->scope->get_option( $this->diagnostics_option, [] );
+		$state = is_array( $state ) ? $state : [];
+		$cached = $this->scope->get_transient( $this->cache_key );
+		if ( false === $cached ) {
+			$cache_age = 'not_cached';
+		} elseif ( ! empty( $state['cache_written_at'] ) ) {
+			$cache_age = (string) max( 0, time() - (int) $state['cache_written_at'] ) . ' seconds';
+		} else {
+			$cache_age = 'unknown';
+		}
+
+		$next_retry = [];
+		if ( function_exists( 'wp_next_scheduled' ) ) {
+			$retry_hooks = [
+				'um_updater_challenge_verify_' . $this->slug,
+				'um_updater_opportunistic_registration_' . $this->slug,
+				'um_updater_challenge_init_retry_' . $this->slug,
+			];
+			foreach ( $retry_hooks as $hook ) {
+				$timestamp = wp_next_scheduled( $hook );
+				if ( $timestamp ) {
+					$next_retry[] = (int) $timestamp;
+				}
+			}
+			for ( $attempt = 0; $attempt <= self::MAX_REGISTRATION_RETRIES; $attempt++ ) {
+				$timestamp = wp_next_scheduled( 'um_updater_challenge_init_retry_' . $this->slug, [ $attempt ] );
+				if ( $timestamp ) {
+					$next_retry[] = (int) $timestamp;
+				}
+			}
+			// Verify events are bound to a challenge ID argument, so a lookup by
+			// hook name alone misses them. Scan the cron array by hook name.
+			$cron = function_exists( '_get_cron_array' ) ? _get_cron_array() : [];
+			foreach ( ( is_array( $cron ) ? $cron : [] ) as $timestamp => $scheduled ) {
+				if ( ! is_array( $scheduled ) ) {
+					continue;
+				}
+				foreach ( $retry_hooks as $hook ) {
+					if ( isset( $scheduled[ $hook ] ) ) {
+						$next_retry[] = (int) $timestamp;
+					}
+				}
+			}
+		}
+
+		$last_attempt = (int) $this->scope->get_option( $this->opportunistic_registration_option, 0 );
+		if ( $last_attempt > 0 && $last_attempt + DAY_IN_SECONDS > time() ) {
+			$next_retry[] = $last_attempt + DAY_IN_SECONDS;
+		}
+		$next_retry = $next_retry ? min( $next_retry ) : 0;
+
+		if ( '' !== $this->get_site_key() ) {
+			$registration = 'registered';
+		} elseif ( $this->scope->get_transient( $this->challenge_transient ) ) {
+			$registration = 'challenge_pending';
+		} elseif ( $next_retry ) {
+			$registration = 'retry_scheduled_or_cooling_down';
+		} else {
+			$registration = 'keyless';
+		}
+
+		return [
+			'scope'                   => $this->scope->is_network() ? 'network' : 'site',
+			'last_update_check_result' => is_string( $state['last_result'] ?? null ) ? substr( $state['last_result'], 0, 64 ) : 'unknown',
+			'last_update_check_at'     => ! empty( $state['last_checked_at'] ) ? gmdate( 'c', (int) $state['last_checked_at'] ) : 'unknown',
+			'cache_age'                => $cache_age,
+			'registration_state'       => $registration,
+			'next_registration_retry'  => $next_retry ? gmdate( 'c', $next_retry ) : 'none',
+			'withheld_update_reason'   => is_string( $state['withheld_reason'] ?? null ) && '' !== $state['withheld_reason'] ? substr( $state['withheld_reason'], 0, 64 ) : 'none',
+		];
 	}
 
 	/**
@@ -1790,6 +2107,111 @@ class Updater {
 	}
 
 	/**
+	 * Acquire a short, scope-aware registration lock.
+	 */
+	private function acquire_registration_lock(): bool {
+		if ( $this->registration_lock_depth > 0 ) {
+			$this->registration_lock_depth++;
+			return true;
+		}
+
+		$now     = time();
+		$missing = new \stdClass();
+		// Network recovery runs only on that network's main site, so a local
+		// non-autoloaded option gives every site/network an atomic unique key.
+		$lock       = get_option( $this->registration_lock_option, $missing );
+		$lock_exists = $missing !== $lock;
+		$held_at    = is_array( $lock ) ? (int) ( $lock['acquired_at'] ?? 0 ) : 0;
+		$held_owner = is_array( $lock ) ? (string) ( $lock['owner'] ?? '' ) : '';
+		if ( '' !== $held_owner && $held_at > 0 && $held_at <= $now && ( $now - $held_at ) < self::REGISTRATION_LOCK_TTL ) {
+			return false;
+		}
+		$owner = uniqid( $this->slug . '-', true );
+		$value = [ 'owner' => $owner, 'acquired_at' => $now ];
+		$acquired = ! $lock_exists
+			? add_option( $this->registration_lock_option, $value, '', false )
+			: $this->replace_stale_registration_lock( $lock, $value );
+		if ( ! $acquired ) {
+			return false;
+		}
+
+		$this->registration_lock_value = $value;
+		$this->registration_lock_depth = 1;
+		return true;
+	}
+
+	/**
+	 * Atomically replace only the stale lock value this worker observed.
+	 *
+	 * @param mixed $observed Lock value read before the compare-and-swap.
+	 */
+	private function replace_stale_registration_lock( $observed, array $replacement ): bool {
+		global $wpdb;
+
+		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) && method_exists( $wpdb, 'update' ) ) {
+			$updated = $wpdb->update(
+				$wpdb->options,
+				[ 'option_value' => maybe_serialize( $replacement ) ],
+				[
+					'option_name'  => $this->registration_lock_option,
+					'option_value' => maybe_serialize( $observed ),
+				],
+				[ '%s' ],
+				[ '%s', '%s' ]
+			);
+			if ( 1 === $updated && function_exists( 'wp_cache_delete' ) ) {
+				wp_cache_delete( $this->registration_lock_option, 'options' );
+			}
+			return 1 === $updated;
+		}
+
+		// Minimal non-WordPress test harness fallback. Production always uses
+		// the conditional database update above.
+		if ( $observed !== get_option( $this->registration_lock_option, false ) ) {
+			return false;
+		}
+		update_option( $this->registration_lock_option, $replacement, false );
+		return true;
+	}
+
+	/**
+	 * Delete only the exact lock value acquired by this worker.
+	 */
+	private function delete_owned_registration_lock(): void {
+		global $wpdb;
+
+		if ( isset( $wpdb ) && is_object( $wpdb ) && isset( $wpdb->options ) && method_exists( $wpdb, 'delete' ) ) {
+			$deleted = $wpdb->delete(
+				$wpdb->options,
+				[
+					'option_name'  => $this->registration_lock_option,
+					'option_value' => maybe_serialize( $this->registration_lock_value ),
+				],
+				[ '%s', '%s' ]
+			);
+			if ( 1 === $deleted && function_exists( 'wp_cache_delete' ) ) {
+				wp_cache_delete( $this->registration_lock_option, 'options' );
+			}
+			return;
+		}
+
+		if ( $this->registration_lock_value === get_option( $this->registration_lock_option, false ) ) {
+			delete_option( $this->registration_lock_option );
+		}
+	}
+
+	private function release_registration_lock(): void {
+		if ( $this->registration_lock_depth <= 0 ) {
+			return;
+		}
+		$this->registration_lock_depth--;
+		if ( 0 === $this->registration_lock_depth ) {
+			$this->delete_owned_registration_lock();
+			$this->registration_lock_value = [];
+		}
+	}
+
+	/**
 	 * Attempt whichever registration mode is configured for this site.
 	 */
 	private function attempt_registration(): void {
@@ -1827,8 +2249,10 @@ class Updater {
 		// Canonical endpoint is /api/register; older SDKs hit /register and
 		// ride the server's compatibility rewrite.
 		$response = wp_remote_post( $this->server . '/api/register', [
-			'timeout'   => 15,
-			'sslverify' => true,
+			'timeout'            => 15,
+			'sslverify'          => true,
+			'redirection'        => 0,
+			'reject_unsafe_urls' => ! $this->allow_insecure_localhost,
 			'headers'   => [
 				'Content-Type' => 'application/json',
 				'Accept'       => 'application/json',
@@ -1856,7 +2280,9 @@ class Updater {
 		$body = json_decode( wp_remote_retrieve_body( $response ), true );
 		if ( ! empty( $body['site_key'] ) ) {
 			$this->scope->update_option( $this->key_option, $body['site_key'] );
+			$this->scope->delete_transient( $this->challenge_transient );
 			$this->clear_registration_recovery_state();
+			$this->clear_registration_events();
 		}
 	}
 
@@ -1869,13 +2295,36 @@ class Updater {
 		if ( $this->is_addon_registration() && 'package_key' !== $this->addon_auth_mode ) {
 			return;
 		}
+		if ( $this->scope->get_transient( $this->challenge_transient ) ) {
+			return;
+		}
+		if ( ! $this->acquire_registration_lock() ) {
+			return;
+		}
+
+		try {
+			$this->request_challenge_registration( $attempt );
+		} finally {
+			$this->release_registration_lock();
+		}
+	}
+
+	/**
+	 * Issue challenge initialization while holding the registration lock.
+	 */
+	private function request_challenge_registration( int $attempt ): void {
+		if ( $this->scope->get_transient( $this->challenge_transient ) ) {
+			return;
+		}
 
 		$plugin_data     = get_file_data( $this->file, [ 'Version' => 'Version' ] );
 		$current_version = $plugin_data['Version'] ?? '';
 
 		$response = wp_remote_post( $this->server . '/api/register/init', [
-			'timeout'   => 15,
-			'sslverify' => true,
+			'timeout'            => 15,
+			'sslverify'          => true,
+			'redirection'        => 0,
+			'reject_unsafe_urls' => ! $this->allow_insecure_localhost,
 			'headers'   => [
 				'Content-Type' => 'application/json',
 				'Accept'       => 'application/json',
@@ -1898,15 +2347,20 @@ class Updater {
 			return;
 		}
 
-		$this->scope->set_transient( $this->challenge_transient, [
+		$expires_in = isset( $body['expires_in'] ) && is_numeric( $body['expires_in'] )
+			? (int) $body['expires_in']
+			: self::CHALLENGE_TTL;
+		$expires_in = min( self::CHALLENGE_TTL, max( 30, $expires_in ) );
+		$challenge  = [
 			'id'             => (string) $body['challenge_id'],
 			'token'          => (string) $body['challenge_token'],
 			'retried'        => false,
 			'verify_attempt' => 0,
-		], self::CHALLENGE_TTL );
+			'expires_at'     => time() + $expires_in,
+		];
 
 		$delay = max( 5, (int) ( $body['verify_after'] ?? 30 ) );
-		wp_schedule_single_event( time() + $delay, 'um_updater_challenge_verify_' . $this->slug );
+		$this->schedule_challenge_verification( $challenge, $delay );
 	}
 
 	/**
@@ -1917,11 +2371,21 @@ class Updater {
 			return;
 		}
 
-		if ( ! $this->scope->can_run_network_task() || empty( $this->server ) || $this->get_site_key() || $this->scope->get_transient( $this->challenge_transient ) ) {
+		if ( ! $this->scope->can_run_network_task() || empty( $this->server ) ) {
 			return;
 		}
 
-		$this->begin_challenge_registration( max( 1, $attempt ) );
+		if ( $this->get_site_key() ) {
+			$this->clear_registration_events();
+			return;
+		}
+
+		if ( $this->scope->get_transient( $this->challenge_transient ) ) {
+			wp_unschedule_hook( 'um_updater_challenge_init_retry_' . $this->slug );
+			return;
+		}
+
+		$this->begin_challenge_registration( max( 0, $attempt ) );
 	}
 
 	/**
@@ -1979,28 +2443,72 @@ class Updater {
 
 	/**
 	 * Zero-config registration, step 2 (wp-cron): ask the server to verify.
-	 * Retries once at +10 minutes if the server couldn't reach this site,
-	 * then gives up quietly — the site stays keyless, same as today.
+	 * Retryable failures use bounded backoff and switch to a fresh challenge
+	 * when the current challenge cannot remain usable until the next attempt.
 	 */
-	public function run_challenge_verify(): void {
+	public function run_challenge_verify( string $scheduled_challenge_id = '' ): void {
 		if ( $this->is_addon_registration() && 'package_key' !== $this->addon_auth_mode ) {
 			$this->scope->delete_transient( $this->challenge_transient );
+			$this->clear_registration_events();
 			return;
 		}
 
 		if ( ! $this->scope->can_run_network_task() ) {
 			return;
 		}
+		if ( ! $this->acquire_registration_lock() ) {
+			return;
+		}
+
+		try {
+			$this->run_challenge_verify_locked( $scheduled_challenge_id );
+		} finally {
+			$this->release_registration_lock();
+		}
+	}
+
+	/**
+	 * Process challenge verification while holding the registration lock.
+	 */
+	private function run_challenge_verify_locked( string $scheduled_challenge_id ): void {
+
+		if ( $this->get_site_key() ) {
+			$this->scope->delete_transient( $this->challenge_transient );
+			$this->scope->delete_option( $this->challenge_expired_option );
+			$this->clear_registration_events();
+			return;
+		}
 
 		$challenge = $this->scope->get_transient( $this->challenge_transient );
 		if ( empty( $challenge['id'] ) ) {
-			$this->maybe_attempt_opportunistic_registration();
+			if ( '' !== $scheduled_challenge_id ) {
+				$this->handle_expired_challenge();
+			} else {
+				// Already inside WP-Cron with the registration lock held, so the
+				// deferred worker (#46) may run inline instead of being rescheduled.
+				$this->run_opportunistic_registration();
+			}
+			return;
+		}
+
+		if ( '' === $scheduled_challenge_id && isset( $challenge['expires_at'] ) ) {
+			return;
+		}
+
+		if ( '' !== $scheduled_challenge_id && $scheduled_challenge_id !== (string) $challenge['id'] ) {
+			return;
+		}
+
+		if ( isset( $challenge['expires_at'] ) && (int) $challenge['expires_at'] <= time() ) {
+			$this->handle_expired_challenge();
 			return;
 		}
 
 		$response = wp_remote_post( $this->server . '/api/register/verify', [
-			'timeout'   => 15,
-			'sslverify' => true,
+			'timeout'            => 15,
+			'sslverify'          => true,
+			'redirection'        => 0,
+			'reject_unsafe_urls' => ! $this->allow_insecure_localhost,
 			'headers'   => [
 				'Content-Type' => 'application/json',
 				'Accept'       => 'application/json',
@@ -2020,6 +2528,7 @@ class Updater {
 			$this->scope->update_option( $this->key_option, $body['site_key'] );
 			$this->scope->delete_transient( $this->challenge_transient );
 			$this->clear_registration_recovery_state();
+			$this->clear_registration_events();
 			return;
 		}
 
@@ -2040,13 +2549,15 @@ class Updater {
 
 		// token_mismatch / anything else non-retryable — give up quietly.
 		$this->scope->delete_transient( $this->challenge_transient );
+		$this->clear_registration_events();
 	}
 
 	/**
 	 * Re-initialize an expired challenge at most three times per day.
 	 */
-	private function handle_expired_challenge(): void {
+	private function handle_expired_challenge( int $retry_delay = 0 ): void {
 		$this->scope->delete_transient( $this->challenge_transient );
+		$this->clear_registration_events();
 
 		$now   = time();
 		$state = $this->scope->get_option( $this->challenge_expired_option, [] );
@@ -2057,11 +2568,20 @@ class Updater {
 			];
 		}
 
-		$state['count'] = (int) ( $state['count'] ?? 0 ) + 1;
+		$state['count'] = min( self::MAX_EXPIRED_CHALLENGES, (int) ( $state['count'] ?? 0 ) + 1 );
 		$this->scope->update_option( $this->challenge_expired_option, $state );
 
 		if ( $state['count'] >= self::MAX_EXPIRED_CHALLENGES ) {
 			$this->scope->update_option( $this->opportunistic_registration_option, $now );
+			return;
+		}
+
+		if ( $retry_delay > 0 ) {
+			$this->replace_registration_event(
+				'um_updater_challenge_init_retry_' . $this->slug,
+				time() + min( $retry_delay, 6 * HOUR_IN_SECONDS ),
+				[ 0 ]
+			);
 			return;
 		}
 
@@ -2077,29 +2597,77 @@ class Updater {
 	}
 
 	/**
-	 * One retry at +10 minutes for transient reachability failures.
+	 * Remove every pending registration event for this plugin.
+	 */
+	private function clear_registration_events(): void {
+		wp_unschedule_hook( 'um_updater_challenge_verify_' . $this->slug );
+		wp_unschedule_hook( 'um_updater_challenge_init_retry_' . $this->slug );
+	}
+
+	/**
+	 * Replace all pending registration work with one bounded event.
+	 */
+	private function replace_registration_event( string $hook, int $timestamp, array $args = [] ): bool {
+		$this->clear_registration_events();
+		$result = wp_schedule_single_event( $timestamp, $hook, $args );
+		if ( false === $result || is_wp_error( $result ) ) {
+			$this->scope->delete_transient( $this->challenge_transient );
+			$this->scope->update_option( $this->opportunistic_registration_option, time() );
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Persist a challenge only while the requested verification can still run.
+	 * Otherwise abandon the unusable challenge and re-initialize at that delay.
+	 */
+	private function schedule_challenge_verification( array $challenge, int $delay ): void {
+		$delay      = min( max( 5, $delay ), 6 * HOUR_IN_SECONDS );
+		$expires_at = isset( $challenge['expires_at'] ) && is_numeric( $challenge['expires_at'] )
+			? (int) $challenge['expires_at']
+			: time() + self::CHALLENGE_TTL;
+		$remaining  = $expires_at - time();
+
+		if ( $remaining <= 0 || $delay >= $remaining ) {
+			$this->handle_expired_challenge( $delay );
+			return;
+		}
+
+		$challenge['expires_at'] = $expires_at;
+		$this->scope->set_transient( $this->challenge_transient, $challenge, $remaining );
+		$this->replace_registration_event(
+			'um_updater_challenge_verify_' . $this->slug,
+			time() + $delay,
+			[ (string) $challenge['id'] ]
+		);
+	}
+
+	/**
+	 * Retry verification while the current challenge remains usable.
 	 */
 	private function maybe_retry_challenge( array $challenge, $response = null ): void {
 		if ( null === $response ) {
 			if ( ! empty( $challenge['retried'] ) ) {
 				$this->scope->delete_transient( $this->challenge_transient );
+				$this->clear_registration_events();
 				return;
 			}
 			$challenge['retried'] = true;
-			$this->scope->set_transient( $this->challenge_transient, $challenge, self::CHALLENGE_TTL );
-			wp_schedule_single_event( time() + 10 * MINUTE_IN_SECONDS, 'um_updater_challenge_verify_' . $this->slug );
+			$this->schedule_challenge_verification( $challenge, 10 * MINUTE_IN_SECONDS );
 			return;
 		}
 
 		$attempt = (int) ( $challenge['verify_attempt'] ?? 0 ) + 1;
 		if ( $attempt > self::MAX_REGISTRATION_RETRIES || ! $this->is_retryable_response( $response ) ) {
 			$this->scope->delete_transient( $this->challenge_transient );
+			$this->clear_registration_events();
 			return;
 		}
 
 		$challenge['verify_attempt'] = $attempt;
-		$this->scope->set_transient( $this->challenge_transient, $challenge, self::CHALLENGE_TTL );
-		wp_schedule_single_event( time() + $this->retry_delay( $attempt, $response ), 'um_updater_challenge_verify_' . $this->slug );
+		$this->schedule_challenge_verification( $challenge, $this->retry_delay( $attempt, $response ) );
 	}
 
 	/**
@@ -2110,7 +2678,11 @@ class Updater {
 			return;
 		}
 
-		wp_schedule_single_event( time() + $this->retry_delay( $attempt, $response ), 'um_updater_challenge_init_retry_' . $this->slug, [ $attempt ] );
+		$this->replace_registration_event(
+			'um_updater_challenge_init_retry_' . $this->slug,
+			time() + $this->retry_delay( $attempt, $response ),
+			[ $attempt ]
+		);
 	}
 
 	/**
@@ -2340,23 +2912,51 @@ class Updater {
 	}
 
 	/**
-	 * Opportunistically re-enter registration from update checks.
+	 * Schedule registration recovery without delaying an update or download request.
 	 */
-	private function maybe_attempt_opportunistic_registration(): void {
-		if ( $this->is_addon_registration() && 'package_key' !== $this->addon_auth_mode ) {
+	private function maybe_schedule_opportunistic_registration(): void {
+		if ( ! $this->opportunistic_registration_is_eligible() || $this->registration_is_cooling_down() ) {
 			return;
+		}
+
+		$hook = 'um_updater_opportunistic_registration_' . $this->slug;
+		if ( ! wp_next_scheduled( $hook ) ) {
+			wp_schedule_single_event( time() + MINUTE_IN_SECONDS, $hook );
+		}
+	}
+
+	/**
+	 * Run bounded registration recovery from WP-Cron, never the update screen.
+	 */
+	public function run_opportunistic_registration(): void {
+		if ( ! $this->opportunistic_registration_is_eligible() || $this->registration_is_cooling_down() ) {
+			return;
+		}
+
+		// Another worker already holding the registration lock is creating a
+		// challenge right now; do not consume the 24-hour cooldown for a no-op.
+		if ( ! $this->acquire_registration_lock() ) {
+			return;
+		}
+
+		try {
+			$this->scope->update_option( $this->opportunistic_registration_option, time() );
+			$this->attempt_registration();
+		} finally {
+			$this->release_registration_lock();
+		}
+	}
+
+	private function opportunistic_registration_is_eligible(): bool {
+		if ( $this->is_addon_registration() && 'package_key' !== $this->addon_auth_mode ) {
+			return false;
 		}
 
 		if ( ! $this->scope->can_run_network_task() || empty( $this->server ) || $this->get_site_key() || $this->scope->get_transient( $this->challenge_transient ) ) {
-			return;
+			return false;
 		}
 
-		if ( $this->registration_is_cooling_down() ) {
-			return;
-		}
-
-		$this->scope->update_option( $this->opportunistic_registration_option, time() );
-		$this->attempt_registration();
+		return true;
 	}
 
 	/**
@@ -2505,7 +3105,7 @@ class Updater {
 	 * `package_type: "addon"` plus `parent: { slug, min_version,
 	 * max_version_exclusive, api_major }`. A transitional alternate shape,
 	 * `package: { slug, type: "addon", parent: {...} }`, is accepted through
-	 * the 4.8.x line only and must agree with the canonical shape when both
+	 * the 4.x line and must agree with the canonical shape when both
 	 * appear. Unknown explicit package types and malformed structures fail
 	 * closed; manifests without either declaration are ordinary core
 	 * manifests and behave exactly as before.
@@ -2766,7 +3366,10 @@ class Updater {
 		}
 
 		$cached = $this->scope->get_transient( $this->cache_key );
-		if ( ! is_object( $cached ) || empty( $cached->version ) ) {
+		if ( ! $this->is_valid_manifest( $cached ) ) {
+			if ( false !== $cached && 'error' !== $cached ) {
+				$this->cache_manifest_error();
+			}
 			return;
 		}
 
@@ -2801,25 +3404,26 @@ class Updater {
 			return $transient;
 		}
 
-		$this->maybe_attempt_opportunistic_registration();
+		$this->maybe_schedule_opportunistic_registration();
 
 		$remote = $this->fetch_update_data();
 
 		if ( ! $remote ) {
 			return $transient;
 		}
+		$current_version = $transient->checked[ $this->basename ] ?? '0.0.0';
 
 		// Add-on parent compatibility gate: never advertise an update the
 		// installed parent cannot support (see docs/addon-packages.md). The
 		// admin notice hooked in init() explains why the update is withheld.
-		if ( null !== $this->evaluate_addon_gate( $remote ) ) {
+		$gate = $this->evaluate_addon_gate( $remote );
+		if ( null !== $gate ) {
+			$this->record_withheld_reason( version_compare( $remote->version, $current_version, '>' ) ? $gate['code'] : '' );
 			if ( isset( $transient->response[ $this->basename ] ) ) {
 				unset( $transient->response[ $this->basename ] );
 			}
 			return $transient;
 		}
-
-		$current_version = $transient->checked[ $this->basename ] ?? '0.0.0';
 
 		// Validate download URL origin, then append key if we have one.
 		$download_url = $this->validate_download_url( $remote->download_url ?? '' );
@@ -2831,6 +3435,7 @@ class Updater {
 
 		// License-gated: if license client is set and invalid, show update but block download.
 		if ( null !== $this->license_client && ! $this->license_client->is_valid() ) {
+			$this->record_withheld_reason( version_compare( $remote->version, $current_version, '>' ) ? 'license_invalid' : '' );
 			if ( version_compare( $remote->version, $current_version, '>' ) ) {
 				$transient->response[ $this->basename ] = (object) [
 					'slug'           => $this->slug,
@@ -2848,6 +3453,7 @@ class Updater {
 			}
 			return $transient;
 		}
+		$this->record_withheld_reason( '' );
 
 		$plugin_data = (object) [
 			'slug'         => $this->slug,
@@ -2944,7 +3550,7 @@ class Updater {
 	}
 
 	/**
-	 * Validate that a download URL's host matches the configured update server.
+	 * Validate that a download URL's normalized origin matches the update server.
 	 *
 	 * Blocks supply-chain attacks where a compromised manifest redirects downloads
 	 * to an attacker-controlled host.
@@ -2953,21 +3559,17 @@ class Updater {
 	 * @return string The original URL if valid, empty string if blocked.
 	 */
 	private function validate_download_url( string $url ): string {
-		if ( empty( $url ) ) {
-			return '';
-		}
+		$allowed_origin = normalized_url_origin( $this->server );
+		$url_origin     = normalized_url_origin( $url );
 
-		$allowed_host   = parse_url( $this->server, PHP_URL_HOST );
-		$url_host       = parse_url( $url, PHP_URL_HOST );
-		$allowed_scheme = parse_url( $this->server, PHP_URL_SCHEME );
-		$url_scheme     = parse_url( $url, PHP_URL_SCHEME );
-
-		// Host AND scheme must match the configured server — a same-host http://
-		// URL in a tampered manifest would otherwise downgrade the download to
-		// plaintext and reopen the MITM door the origin check exists to close.
-		if ( $url_host !== $allowed_host || $url_scheme !== $allowed_scheme ) {
+		// Scheme, normalized host, and effective port must match. Userinfo makes
+		// normalized_url_origin() fail, so credentials cannot be smuggled through
+		// a manifest URL even when its apparent hostname matches.
+		if ( null === $url_origin || $url_origin !== $allowed_origin ) {
+			$url_label     = null === $url_origin ? 'invalid' : $url_origin['scheme'] . '://' . $url_origin['host'] . ':' . $url_origin['port'];
+			$allowed_label = null === $allowed_origin ? 'invalid' : $allowed_origin['scheme'] . '://' . $allowed_origin['host'] . ':' . $allowed_origin['port'];
 			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			error_log( "um-updater [{$this->slug}]: Download URL '{$url_scheme}://{$url_host}' does not match server '{$allowed_scheme}://{$allowed_host}' — blocked." );
+			error_log( "um-updater [{$this->slug}]: Download URL '{$url_label}' does not match server '{$allowed_label}' — blocked." );
 			return '';
 		}
 
@@ -3065,7 +3667,180 @@ class Updater {
 	}
 
 	/**
-	 * Intercept plugin download to verify SHA-256 integrity when the manifest provides it.
+	 * Return decoded query name/value pairs without PHP array normalization.
+	 *
+	 * parse_str() turns bracketed names into nested arrays and is constrained by
+	 * max_input_vars. Redirect validation instead needs to inspect every raw pair
+	 * so credentials cannot hide in an array-shaped parameter.
+	 *
+	 * @return array<int,array{0:string,1:string}>
+	 */
+	private function package_query_pairs( string $url ): array {
+		$query = parse_url( $url, PHP_URL_QUERY );
+		if ( ! is_string( $query ) || '' === $query ) {
+			return [];
+		}
+
+		$pairs = [];
+		foreach ( preg_split( '/[&;]/', $query ) ?: [] as $part ) {
+			$pair    = explode( '=', $part, 2 );
+			$pairs[] = [ urldecode( $pair[0] ), urldecode( $pair[1] ?? '' ) ];
+		}
+		return $pairs;
+	}
+
+	/**
+	 * Whether a decoded query name contains a protected credential field.
+	 */
+	private function is_package_credential_name( string $name ): bool {
+		$segments = preg_split( '/[\[\]]+/', strtolower( $name ), -1, PREG_SPLIT_NO_EMPTY ) ?: [];
+		return [] !== array_intersect( $segments, [ 'key', 'site_url', 'download_token' ] );
+	}
+
+	/**
+	 * Collect credential values from the original Update Machine package URL.
+	 *
+	 * @return string[]
+	 */
+	private function package_credential_values( string $url ): array {
+		$values = [];
+		foreach ( $this->package_query_pairs( $url ) as [ $name, $value ] ) {
+			if ( $this->is_package_credential_name( $name ) && '' !== $value ) {
+				$values[] = $value;
+			}
+		}
+		return array_values( array_unique( $values ) );
+	}
+
+	/**
+	 * Validate one explicit package redirect without forwarding SDK credentials.
+	 *
+	 * Update Machine may redirect a package to an HTTPS object-store URL. The
+	 * Location value is used verbatim: query credentials from the previous URL
+	 * are never merged into it. Cross-origin targets may carry their own signed
+	 * storage query, but may not contain SDK credential parameters or values.
+	 */
+	private function validate_package_redirect( string $location, string $current_url, array $credential_values ): string {
+		$next_origin    = normalized_url_origin( $location );
+		$current_origin = normalized_url_origin( $current_url );
+		if ( null === $next_origin || 'https' !== $next_origin['scheme'] ) {
+			return '';
+		}
+
+		// Cross-origin object storage is supported only on the normal HTTPS port.
+		// A same-host port change is an origin change too, and is rejected here.
+		if ( $next_origin !== $current_origin && 443 !== $next_origin['port'] ) {
+			return '';
+		}
+		if ( filter_var( $next_origin['host'], FILTER_VALIDATE_IP )
+			&& false === filter_var( $next_origin['host'], FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+			return '';
+		}
+
+		if ( ! function_exists( 'wp_http_validate_url' ) || false === wp_http_validate_url( $location ) ) {
+			return '';
+		}
+
+		if ( $next_origin !== $current_origin ) {
+			$decoded_location = urldecode( $location );
+			foreach ( $credential_values as $credential_value ) {
+				if ( '' !== $credential_value && false !== strpos( $decoded_location, $credential_value ) ) {
+					return '';
+				}
+			}
+			foreach ( $this->package_query_pairs( $location ) as [ $name, $value ] ) {
+				if ( $this->is_package_credential_name( $name ) ) {
+					return '';
+				}
+				if ( '' !== $value && in_array( $value, $credential_values, true ) ) {
+					return '';
+				}
+			}
+		}
+
+		return $location;
+	}
+
+	/**
+	 * Download a package with explicit, bounded redirect handling.
+	 *
+	 * WordPress Requests recursively reuses the original headers and body when
+	 * following redirects. Package downloads therefore disable automatic
+	 * redirects and follow only validated HTTPS Location values themselves.
+	 *
+	 * @return string|\WP_Error Temporary filename or a bounded failure.
+	 */
+	private function download_package( string $package ) {
+		$path     = parse_url( $package, PHP_URL_PATH );
+		$filename = is_string( $path ) && '' !== $path ? basename( $path ) : '';
+		$tmp      = wp_tempnam( $filename );
+		if ( ! $tmp ) {
+			return new \WP_Error( 'http_no_file', __( 'Could not create temporary file.', 'um-updater' ) );
+		}
+
+		$current           = $package;
+		$credential_values = $this->package_credential_values( $package );
+		$redirects         = 0;
+		try {
+			while ( true ) {
+				$response = wp_safe_remote_get( $current, [
+					'timeout'            => 300,
+					'sslverify'          => true,
+					'redirection'        => 0,
+					'reject_unsafe_urls' => true,
+					'stream'             => true,
+					'filename'           => $tmp,
+				] );
+
+				if ( is_wp_error( $response ) ) {
+					@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+					return $response;
+				}
+
+				$code = wp_remote_retrieve_response_code( $response );
+				if ( 200 === $code ) {
+					return $tmp;
+				}
+
+				if ( in_array( $code, [ 301, 302, 303, 307, 308 ], true ) ) {
+					$location = (string) wp_remote_retrieve_header( $response, 'location' );
+					$next     = $redirects < 5 ? $this->validate_package_redirect( $location, $current, $credential_values ) : '';
+					if ( '' === $next ) {
+						@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+						return new \WP_Error(
+							'um_package_redirect_blocked',
+							__( 'Update blocked: the package redirect was missing, unsafe, credential-bearing, or exceeded the redirect limit.', 'um-updater' )
+						);
+					}
+
+					$current = $next;
+					$redirects++;
+					continue;
+				}
+
+				$body = '';
+				if ( is_readable( $tmp ) ) {
+					$handle = @fopen( $tmp, 'rb' ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+					if ( $handle ) {
+						$body = (string) fread( $handle, KB_IN_BYTES );
+						fclose( $handle );
+					}
+				}
+				@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+				return new \WP_Error(
+					'http_404',
+					trim( (string) wp_remote_retrieve_response_message( $response ) ),
+					[ 'code' => $code, 'body' => $body ]
+				);
+			}
+		} catch ( \Throwable $error ) {
+			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			throw $error;
+		}
+	}
+
+	/**
+	 * Intercept plugin download to enforce SHA-256 integrity. Manifests without a valid hash fail closed.
 	 *
 	 * @param bool|string|\WP_Error $reply    Default false (no pre-download).
 	 * @param string                $package  Download URL.
@@ -3078,16 +3853,26 @@ class Updater {
 		if ( ( $hook_extra['plugin'] ?? '' ) !== $this->basename ) {
 			return $reply;
 		}
+		if ( '' === $this->validate_download_url( $package ) ) {
+			return new \WP_Error(
+				'um_package_origin_invalid',
+				__( 'Update blocked: the package URL does not match the configured Update Machine origin.', 'um-updater' )
+			);
+		}
 
 		$cached = $this->scope->get_transient( $this->cache_key );
 
 		$hash_expected = (bool) $this->scope->get_option( $this->hash_expected_option, false );
 
 		// WordPress can retain its update offer longer than our manifest cache.
-		// Refresh an expired cache before deciding whether the hash disappeared.
+		// Refresh an expired cache before verifying the hash.
 		if ( false === $cached ) {
 			$cached        = $this->fetch_update_data();
 			$hash_expected = (bool) $this->scope->get_option( $this->hash_expected_option, false );
+		}
+		if ( false !== $cached && 'error' !== $cached && ! $this->is_valid_manifest( $cached, true ) ) {
+			$this->cache_manifest_error();
+			$cached = 'error';
 		}
 
 		// Add-on parent compatibility gate: manual upgrader flows and stale
@@ -3130,35 +3915,23 @@ class Updater {
 		}
 
 		if ( ! is_object( $cached ) ) {
-			if ( $hash_expected ) {
-				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-				error_log( "um-updater [{$this->slug}]: Update manifest unavailable while confirming SHA-256 integrity — refusing update." );
-				return new \WP_Error(
-					'um_manifest_unavailable',
-					__( 'Update blocked: the update manifest could not be retrieved to confirm package integrity. Please try again.', 'um-updater' )
-				);
-			}
-
-			return $reply;
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( "um-updater [{$this->slug}]: Update manifest unavailable while confirming SHA-256 integrity — refusing update." );
+			return new \WP_Error(
+				'um_manifest_unavailable',
+				__( 'Update blocked: the update manifest could not be retrieved to confirm package integrity. Please try again.', 'um-updater' )
+			);
 		}
 
-		// Preserve compatibility for plugins that have never shipped hashes, but
-		// fail closed once this install has observed a valid manifest hash.
+		// Fail closed even on first contact. A package without a manifest hash
+		// cannot be distinguished from a package modified in transit/storage.
 		if ( ! isset( $cached->sha256 ) ) {
-			if ( $hash_expected ) {
-				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-				error_log( "um-updater [{$this->slug}]: Update manifest omits sha256 after hashes were previously observed — refusing update." );
-				return new \WP_Error(
-					'um_sha256_missing',
-					__( 'Update blocked: expected an integrity hash but the update manifest did not provide one. Please contact the plugin author.', 'um-updater' )
-				);
-			}
-
-			if ( $cached ) {
-				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-				error_log( "um-updater [{$this->slug}]: Update manifest missing sha256 field — skipping integrity check." );
-			}
-			return $reply;
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( "um-updater [{$this->slug}]: Update manifest omits sha256 — refusing update." );
+			return new \WP_Error(
+				'um_sha256_missing',
+				__( 'Update blocked: expected an integrity hash but the update manifest did not provide one. Please contact the plugin author.', 'um-updater' )
+			);
 		}
 
 		$expected_hash = $this->normalize_sha256( $cached->sha256 );
@@ -3175,20 +3948,7 @@ class Updater {
 			$this->scope->update_option( $this->hash_expected_option, 1 );
 		}
 
-		// download_url() accepts no request arguments, so pin TLS verification
-		// with a narrowly scoped filter and always remove it after the request.
-		$force_sslverify = static function ( $args ) {
-			if ( is_array( $args ) ) {
-				$args['sslverify'] = true;
-			}
-			return $args;
-		};
-		add_filter( 'http_request_args', $force_sslverify, PHP_INT_MAX );
-		try {
-			$tmp = download_url( $package );
-		} finally {
-			remove_filter( 'http_request_args', $force_sslverify, PHP_INT_MAX );
-		}
+		$tmp = $this->download_package( $package );
 
 		if ( is_wp_error( $tmp ) ) {
 			$this->maybe_self_heal_domain_locked_key( $tmp );
@@ -3228,7 +3988,11 @@ class Updater {
 	 * @param mixed $value Remote manifest value.
 	 */
 	private function normalize_sha256( $value ): string {
-		$hash = strtolower( trim( (string) $value ) );
+		if ( ! is_string( $value ) ) {
+			return '';
+		}
+
+		$hash = strtolower( trim( $value ) );
 		return preg_match( '/^[a-f0-9]{64}$/', $hash ) ? $hash : '';
 	}
 
@@ -3265,7 +4029,7 @@ class Updater {
 		$this->scope->delete_option( $this->download_403_option );
 		$this->scope->delete_option( $this->key_option );
 		$this->scope->delete_transient( $this->cache_key );
-		$this->maybe_attempt_opportunistic_registration();
+		$this->maybe_schedule_opportunistic_registration();
 	}
 
 	/**
@@ -3287,6 +4051,96 @@ class Updater {
 		}
 
 		return 403 === (int) $data;
+	}
+
+	private function record_update_check_result( string $result ): void {
+		$state = $this->scope->get_option( $this->diagnostics_option, [] );
+		$state = is_array( $state ) ? $state : [];
+		$now   = time();
+		$state['last_result']     = substr( sanitize_key( $result ), 0, 64 );
+		$state['last_checked_at'] = $now;
+		$state['cache_written_at'] = $now;
+		$this->scope->update_option( $this->diagnostics_option, $state );
+	}
+
+	private function record_withheld_reason( string $reason ): void {
+		$state = $this->scope->get_option( $this->diagnostics_option, [] );
+		$state = is_array( $state ) ? $state : [];
+		$reason = substr( sanitize_key( $reason ), 0, 64 );
+		if ( ( $state['withheld_reason'] ?? '' ) === $reason ) {
+			return;
+		}
+		$state['withheld_reason'] = $reason;
+		$this->scope->update_option( $this->diagnostics_option, $state );
+	}
+
+	/**
+	 * Cache a bounded manifest failure without retaining untrusted response data.
+	 */
+	private function cache_manifest_error( int $ttl = 0 ): void {
+		$this->scope->set_transient( $this->cache_key, 'error', $ttl > 0 ? $ttl : self::ERROR_TTL );
+	}
+
+	/**
+	 * Read the cached manifest, replacing malformed cached data with the
+	 * bounded error sentinel so it can never reach update or download logic.
+	 *
+	 * @return object|string|false Manifest object, 'error', or false when nothing is cached.
+	 */
+	private function read_cached_manifest() {
+		$cached = $this->scope->get_transient( $this->cache_key );
+		if ( false === $cached || 'error' === $cached ) {
+			return $cached;
+		}
+		if ( ! $this->is_valid_manifest( $cached ) ) {
+			$this->cache_manifest_error();
+			return 'error';
+		}
+		return $cached;
+	}
+
+	/**
+	 * Validate fields that cross security-sensitive update and download paths.
+	 *
+	 * download_url and sha256 remain optional for compatibility with metadata-only
+	 * and legacy manifests. When present, they must be bounded valid strings.
+	 *
+	 * @param mixed $manifest           Decoded or cached manifest value.
+	 * @param bool  $allow_invalid_hash Preserve the dedicated download-time error for a bounded string hash.
+	 */
+	private function is_valid_manifest( $manifest, bool $allow_invalid_hash = false ): bool {
+		if ( ! is_object( $manifest ) ) {
+			return false;
+		}
+
+		$version = property_exists( $manifest, 'version' ) ? $manifest->version : null;
+		if ( ! is_string( $version ) || ! $this->is_valid_version_string( $version ) ) {
+			return false;
+		}
+
+		if ( property_exists( $manifest, 'download_url' ) ) {
+			$download_url = $manifest->download_url;
+			if ( ! is_string( $download_url ) || '' === trim( $download_url ) || strlen( $download_url ) > self::MAX_DOWNLOAD_URL_LENGTH ) {
+				return false;
+			}
+		}
+
+		if ( property_exists( $manifest, 'sha256' ) ) {
+			$sha256 = $manifest->sha256;
+			if ( ! is_string( $sha256 ) || strlen( $sha256 ) > self::MAX_SHA256_LENGTH
+				|| ( ! $allow_invalid_hash && '' === $this->normalize_sha256( $sha256 ) ) ) {
+				return false;
+			}
+		}
+
+		if ( property_exists( $manifest, 'warning' ) ) {
+			$warning = $manifest->warning;
+			if ( ! is_string( $warning ) || strlen( $warning ) > self::MAX_WARNING_LENGTH ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**
@@ -3313,18 +4167,37 @@ class Updater {
 			}
 		}
 
-		if ( $force ) {
-			$this->scope->delete_transient( $this->cache_key );
+		// A manual force-check refreshes once per PHP request (#41); the actual
+		// delete happens below while holding the fetch lock (#45).
+		if ( $force && $this->force_refresh_started ) {
+			$force = false;
+		} elseif ( $force ) {
+			$this->force_refresh_started = true;
 		}
 
-		$cached = $this->scope->get_transient( $this->cache_key );
-
-		if ( false !== $cached ) {
-			if ( 'error' === $cached ) {
-				return null;
+		if ( ! $force ) {
+			$cached = $this->read_cached_manifest();
+			if ( false !== $cached ) {
+				return 'error' === $cached ? null : $cached;
 			}
-			return $cached;
 		}
+
+		$lock = $this->scope->acquire_lock( $this->fetch_lock_key, self::FETCH_LOCK_TTL );
+		if ( null === $lock ) {
+			// A concurrent worker owns the miss. Reuse any cache it has already
+			// published; otherwise let this request continue without an offer.
+			$cached = $this->read_cached_manifest();
+			return false !== $cached && 'error' !== $cached ? $cached : null;
+		}
+
+		try {
+			if ( $force ) {
+				$this->scope->delete_transient( $this->cache_key );
+			}
+			$cached = $this->read_cached_manifest();
+			if ( false !== $cached ) {
+				return 'error' === $cached ? null : $cached;
+			}
 
 		// Get current plugin version from file headers.
 		$plugin_data     = get_file_data( $this->file, [ 'Version' => 'Version' ] );
@@ -3408,38 +4281,59 @@ class Updater {
 		// POST itself must stay because license-gated responses (download
 		// tokens, warnings) only come back on this path.
 		$response = wp_remote_post( $this->update_url, [
-			'timeout'   => 10,
-			'sslverify' => true,
-			'headers'   => $request_headers,
-			'body'      => wp_json_encode( ( $telemetry_disabled || $filter_failed ) ? (object) [] : $telemetry ),
+			'timeout'             => 10,
+			'sslverify'           => true,
+			'redirection'         => 0,
+			'reject_unsafe_urls'  => ! $this->allow_insecure_localhost,
+			'limit_response_size' => self::MAX_MANIFEST_BYTES + 1,
+			'headers'             => $request_headers,
+			'body'                => wp_json_encode( ( $telemetry_disabled || $filter_failed ) ? (object) [] : $telemetry ),
 		] );
 
-		// Fallback to GET if POST fails (e.g. server doesn't support POST yet).
-		if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+		// Fallback only when the endpoint explicitly does not support POST. Auth,
+		// rate-limit, and server failures must remain failures instead of causing a
+		// second request that could bypass the rejected response.
+		$post_code = is_wp_error( $response ) ? 0 : wp_remote_retrieve_response_code( $response );
+		if ( in_array( $post_code, array( 405, 501 ), true ) ) {
 			$response = wp_remote_get( $this->update_url, [
-				'timeout'   => 10,
-				'sslverify' => true,
-				'headers'   => $get_headers,
+				'timeout'             => 10,
+				'sslverify'           => true,
+				'redirection'         => 0,
+				'reject_unsafe_urls'  => ! $this->allow_insecure_localhost,
+				'limit_response_size' => self::MAX_MANIFEST_BYTES + 1,
+				'headers'             => $get_headers,
 			] );
 		}
 
 		if ( is_wp_error( $response ) ) {
-			$this->scope->set_transient( $this->cache_key, 'error', self::ERROR_TTL );
+			$this->cache_manifest_error();
+			$this->record_update_check_result( 'transport_error' );
 			return null;
 		}
 
 		$code = wp_remote_retrieve_response_code( $response );
 
 		if ( 200 !== $code ) {
-			$this->scope->set_transient( $this->cache_key, 'error', self::ERROR_TTL );
+			// Honor Retry-After on 429 (#41) while still caching only the bounded
+			// error sentinel (#42).
+			$retry_after = 429 === $code ? $this->retry_after_seconds( $response ) : 0;
+			$this->cache_manifest_error( $retry_after );
+			$this->record_update_check_result( 'http_' . $code );
 			return null;
 		}
 
 		$body = wp_remote_retrieve_body( $response );
+		if ( ! is_string( $body ) || strlen( $body ) > self::MAX_MANIFEST_BYTES ) {
+			$this->cache_manifest_error();
+			$this->record_update_check_result( 'oversized_manifest' );
+			return null;
+		}
+
 		$data = json_decode( $body );
 
-		if ( ! $data || empty( $data->version ) ) {
-			$this->scope->set_transient( $this->cache_key, 'error', self::ERROR_TTL );
+		if ( JSON_ERROR_NONE !== json_last_error() || ! $this->is_valid_manifest( $data ) ) {
+			$this->cache_manifest_error();
+			$this->record_update_check_result( JSON_ERROR_NONE === json_last_error() ? 'invalid_manifest' : 'invalid_json' );
 			return null;
 		}
 
@@ -3450,13 +4344,23 @@ class Updater {
 		}
 
 		// Forward server-side warnings to the license client (e.g. "payment past due").
-		if ( null !== $this->license_client && isset( $data->warning ) ) {
-			$this->license_client->store_update_warning( $data->warning );
+		// Update Machine sends this as a response header so the cached manifest
+		// remains shared; the body field stays as a compatibility fallback.
+		if ( null !== $this->license_client ) {
+			$warning = wp_remote_retrieve_header( $response, 'X-License-Warning' );
+			if ( ! is_string( $warning ) || '' === trim( $warning ) ) {
+				$warning = isset( $data->warning ) ? (string) $data->warning : '';
+			}
+			$this->license_client->store_update_warning( trim( $warning ) );
 		}
 
 		$this->scope->set_transient( $this->cache_key, $data, self::CACHE_TTL );
+		$this->record_update_check_result( 'success' );
 
 		return $data;
+		} finally {
+			$this->scope->release_lock( $this->fetch_lock_key, $lock );
+		}
 	}
 }
 } // end class_exists guard
