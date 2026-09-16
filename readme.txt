@@ -65,7 +65,7 @@ The welcome setup asks about telemetry first. Sharing is off by default, can be 
 == Changelog ==
 
 = 2.7.5 =
-* Changed: Updated the bundled Update Machine SDK to v4.9.0.
+* Changed: Updated the bundled Update Machine SDK to v4.9.1.
 
 = 2.7.4 =
 * Changed: Updated the bundled Update Machine SDK to v4.8.0.
