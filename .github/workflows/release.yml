@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           FILE="includes/um-updater.php"
-          EXPECTED_SHA256="2eb5b58318cba530a7a9806e4a8c838f1ddba2ac35339bab502495ae61139fe7"
+          EXPECTED_SHA256="9b479f733a7c5d57c53e353aac5ec5aa3d927a0c8353c87266e035f592ecfb65"
           if [ ! -s "$FILE" ]; then
             echo "::error::$FILE is missing or empty"
             exit 1
@@ -40,10 +40,10 @@ jobs:
           fi
           ACTUAL_SHA256="$(sha256sum "$FILE" | awk '{print $1}')"
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "::error::$FILE does not match the tagged um-updater v4.8.0 artifact"
+            echo "::error::$FILE does not match the tagged um-updater v4.9.1 artifact"
             exit 1
           fi
-          echo "um-updater v4.8.0 tagged artifact verified"
+          echo "um-updater v4.9.1 tagged artifact verified"
 
       - name: Determine plugin metadata
         id: meta
