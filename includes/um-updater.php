@@ -22,7 +22,7 @@
  *     $updater->set_license_client( $license_client );
  *
  * @package UM\PluginUpdater
- * @version 4.9.0
+ * @version 4.9.1
  */
 
 namespace UM\PluginUpdater;
@@ -35,7 +35,7 @@ defined( 'ABSPATH' ) || exit;
 // copy's classes win the class_exists race below — so the copy that DOES boot
 // can detect version skew and warn (see Updater::maybe_warn_version_skew).
 // Keep this literal in sync with @version.
-$GLOBALS['um_updater_sdk_copies']['4.9.0'][] = __FILE__;
+$GLOBALS['um_updater_sdk_copies']['4.9.1'][] = __FILE__;
 
 /**
  * Return a canonical HTTP(S) origin, including its effective port.
@@ -1366,6 +1366,15 @@ class Updater {
 	/** @var bool Prevent force-check from deleting a freshly populated cache more than once per request. */
 	private bool $force_refresh_started = false;
 
+	/** @var string Plugin basename allowed to rebuild core update data during an explicit manual check. */
+	private static string $manual_update_target = '';
+
+	/** @var bool Suppress the automatic admin-init update pass before the manual handler runs. */
+	private static bool $manual_update_pending = false;
+
+	/** @var bool The most recent fetch reused/awaited another worker instead of making a request. */
+	private bool $fetch_contended = false;
+
 	/** @var array|null Normalized add-on parent registration, or null for ordinary plugins. */
 	private ?array $parent_config = null;
 
@@ -1382,7 +1391,7 @@ class Updater {
 	private bool $pending_rollback_network = false;
 
 	/** SDK version reported in telemetry — must match the file's @version. */
-	public const SDK_VERSION = '4.9.0';
+	public const SDK_VERSION = '4.9.1';
 
 	private const CHALLENGE_TTL             = 15 * MINUTE_IN_SECONDS;
 	private const CHALLENGE_EXPIRED_WINDOW  = DAY_IN_SECONDS;
@@ -1740,6 +1749,10 @@ class Updater {
 		add_filter( 'plugins_api', [ $this, 'plugin_info' ], 10, 3 );
 		add_filter( 'plugin_row_meta', [ $this, 'plugin_row_meta' ], 10, 2 );
 		add_filter( 'upgrader_pre_download', [ $this, 'verify_download' ], 10, 4 );
+		add_action( 'admin_init', [ $this, 'prepare_manual_update_check' ], 0 );
+		add_action( 'admin_post_um_check_update_' . $this->slug, [ $this, 'handle_manual_update_check' ] );
+		add_action( 'admin_notices', [ $this, 'maybe_render_manual_check_notice' ] );
+		add_action( 'network_admin_notices', [ $this, 'maybe_render_manual_check_notice' ] );
 
 		// Add-on plugins: explain a withheld update instead of failing silently,
 		// guard uploaded/manual installs that bypass the download hook, and
@@ -1911,6 +1924,9 @@ class Updater {
 			'scope'                   => $this->scope->is_network() ? 'network' : 'site',
 			'last_update_check_result' => is_string( $state['last_result'] ?? null ) ? substr( $state['last_result'], 0, 64 ) : 'unknown',
 			'last_update_check_at'     => ! empty( $state['last_checked_at'] ) ? gmdate( 'c', (int) $state['last_checked_at'] ) : 'unknown',
+			'last_update_http_status'  => isset( $state['http_status'] ) ? (string) max( 0, (int) $state['http_status'] ) : 'unknown',
+			'last_server_version'      => is_string( $state['server_version'] ?? null ) && '' !== $state['server_version'] ? substr( $state['server_version'], 0, 64 ) : 'unknown',
+			'last_update_error'        => is_string( $state['last_error'] ?? null ) && '' !== $state['last_error'] ? substr( $state['last_error'], 0, 200 ) : 'none',
 			'cache_age'                => $cache_age,
 			'registration_state'       => $registration,
 			'next_registration_retry'  => $next_retry ? gmdate( 'c', $next_retry ) : 'none',
@@ -3400,6 +3416,11 @@ class Updater {
 	 * Check for updates and inject into the update transient.
 	 */
 	public function check_update( object $transient ): object {
+		if ( self::$manual_update_pending
+			|| ( '' !== self::$manual_update_target && $this->basename !== self::$manual_update_target ) ) {
+			return $transient;
+		}
+
 		if ( empty( $transient->checked ) ) {
 			return $transient;
 		}
@@ -3531,6 +3552,190 @@ class Updater {
 			'icons'          => (array) ( $remote->icons ?? [] ),
 		];
 	}
+	/**
+	 * Validate and scope a manual action before WordPress runs its automatic
+	 * admin-init update pass.
+	 */
+	public function prepare_manual_update_check(): void {
+		$action = sanitize_key( wp_unslash( $_GET['action'] ?? '' ) );
+		if ( 'um_check_update_' . $this->slug !== $action ) {
+			return;
+		}
+
+		$this->validate_manual_update_request();
+		remove_action( 'admin_init', '_maybe_update_plugins' );
+		self::$manual_update_target  = $this->basename;
+		self::$manual_update_pending = true;
+	}
+
+	/**
+	 * Run one explicit manual update check from the plugin-row action.
+	 *
+	 * WordPress can skip wp_update_plugins() while its core transient is fresh,
+	 * so this handler invalidates the SDK cache under the fetch lock, performs
+	 * the manifest lookup directly, then merges success into native update data.
+	 */
+	public function handle_manual_update_check(): void {
+		$this->validate_manual_update_request();
+
+		$context = sanitize_key( wp_unslash( $_GET['um_context'] ?? 'site' ) );
+		$network = 'network' === $context && function_exists( 'is_multisite' ) && is_multisite();
+
+		self::$manual_update_target  = $this->basename;
+		self::$manual_update_pending = false;
+		try {
+			// A row action is one explicit authenticated lookup. Automatic checks keep
+			// the legacy 405/501 GET fallback, but a click must never issue two calls.
+			$remote = $this->fetch_update_data( true, false );
+			$result = $this->fetch_contended ? 'check_in_progress' : $this->manual_check_result( $remote );
+			if ( ! $this->fetch_contended && null !== $remote ) {
+				$this->rebuild_wordpress_update_cache( get_site_transient( 'update_plugins' ) );
+			}
+		} finally {
+			self::$manual_update_target  = '';
+			self::$manual_update_pending = false;
+		}
+
+		$notice_nonce = wp_create_nonce( 'um_check_notice_' . $this->slug . '_' . $result );
+		$return_url   = $network ? network_admin_url( 'plugins.php' ) : admin_url( 'plugins.php' );
+		$return_url   = add_query_arg(
+			[
+				'um_check_product' => $this->slug,
+				'um_check_result'  => $result,
+				'um_check_notice'  => $notice_nonce,
+			],
+			$return_url
+		);
+
+		wp_safe_redirect( $return_url );
+	}
+
+	/**
+	 * Enforce the manual action's capability, nonce, and product binding.
+	 */
+	private function validate_manual_update_request(): void {
+		if ( ! current_user_can( 'update_plugins' ) ) {
+			wp_die(
+				esc_html__( 'You are not allowed to check for plugin updates.', 'um-updater' ),
+				esc_html__( 'Update check denied', 'um-updater' ),
+				[ 'response' => 403 ]
+			);
+		}
+
+		check_admin_referer( 'um_check_' . $this->slug );
+
+		$product = sanitize_key( wp_unslash( $_GET['um_product'] ?? '' ) );
+		if ( $this->slug !== $product ) {
+			wp_die(
+				esc_html__( 'The requested plugin update check is invalid.', 'um-updater' ),
+				esc_html__( 'Invalid update check', 'um-updater' ),
+				[ 'response' => 400 ]
+			);
+		}
+	}
+
+	/**
+	 * Rebuild only this plugin's native update entry from the direct lookup.
+	 *
+	 * Re-reading the latest core object preserves concurrent plugin offers while
+	 * avoiding a broad wp_update_plugins() pass that could contact every SDK
+	 * endpoint on the site.
+	 */
+	private function rebuild_wordpress_update_cache( $previous ): void {
+		$core = is_object( $previous ) ? $previous : (object) [];
+
+		$plugin_data    = get_file_data( $this->file, [ 'Version' => 'Version' ] );
+		$core->checked  = isset( $core->checked ) && is_array( $core->checked ) ? $core->checked : [];
+		$core->response = isset( $core->response ) && is_array( $core->response ) ? $core->response : [];
+		$core->no_update = isset( $core->no_update ) && is_array( $core->no_update ) ? $core->no_update : [];
+
+		$core->checked[ $this->basename ] = (string) ( $plugin_data['Version'] ?? '' );
+		unset( $core->response[ $this->basename ], $core->no_update[ $this->basename ] );
+
+		$core = $this->check_update( $core );
+
+		// set_site_transient() runs every pre_set_site_transient_update_plugins
+		// callback. Keep those hooks intact, but prevent other Update Machine SDK
+		// instances from turning this one-plugin action into a fleet-wide lookup.
+		self::$manual_update_target = $this->basename;
+		try {
+			set_site_transient( 'update_plugins', $core );
+		} finally {
+			self::$manual_update_target = '';
+		}
+	}
+
+	/**
+	 * Map the last direct lookup to a stable user-facing result.
+	 */
+	private function manual_check_result( ?object $remote ): string {
+		if ( null === $remote ) {
+			$state = $this->scope->get_option( $this->diagnostics_option, [] );
+			$last  = is_array( $state ) ? (string) ( $state['last_result'] ?? '' ) : '';
+			if ( 'transport_error' === $last ) {
+				return 'network_error';
+			}
+			if ( in_array( $last, [ 'http_401', 'http_403' ], true ) ) {
+				return 'auth_error';
+			}
+			if ( 0 === strpos( $last, 'http_' ) ) {
+				return 'http_error';
+			}
+			return 'malformed_response';
+		}
+
+		if ( null !== $this->license_client && ! $this->license_client->is_valid() ) {
+			return 'auth_error';
+		}
+
+		$plugin_data     = get_file_data( $this->file, [ 'Version' => 'Version' ] );
+		$current_version = (string) ( $plugin_data['Version'] ?? '' );
+		if ( version_compare( (string) $remote->version, $current_version, '>' )
+			&& null !== $this->evaluate_addon_gate( $remote ) ) {
+			return 'update_withheld';
+		}
+
+		return version_compare( (string) $remote->version, $current_version, '>' )
+			? 'update_available'
+			: 'already_current';
+	}
+
+	/**
+	 * Render a deterministic notice after an explicit manual update check.
+	 */
+	public function maybe_render_manual_check_notice(): void {
+		$product = sanitize_key( wp_unslash( $_GET['um_check_product'] ?? '' ) );
+		$result  = sanitize_key( wp_unslash( $_GET['um_check_result'] ?? '' ) );
+		$nonce   = sanitize_text_field( wp_unslash( $_GET['um_check_notice'] ?? '' ) );
+		if ( $this->slug !== $product || ! wp_verify_nonce( $nonce, 'um_check_notice_' . $this->slug . '_' . $result ) ) {
+			return;
+		}
+
+		$messages = [
+			'update_available'  => __( 'Update Machine found an available update for %s. WordPress update data was refreshed.', 'um-updater' ),
+			'update_withheld'   => __( 'Update Machine found a newer version for %s, but its compatibility requirements prevent WordPress from offering it. Review the accompanying admin notice.', 'um-updater' ),
+			'check_in_progress' => __( 'Another update check for %s is already in progress. Its existing update data was preserved; try again shortly.', 'um-updater' ),
+			'already_current'   => __( '%s is already current. WordPress update data was refreshed.', 'um-updater' ),
+			'auth_error'        => __( 'Update Machine could not authenticate the update check for %s. Verify its site key or license.', 'um-updater' ),
+			'network_error'     => __( 'Update Machine could not reach the update server for %s. Try again or review Site Health diagnostics.', 'um-updater' ),
+			'http_error'        => __( 'The update server rejected the check for %s. Review Site Health diagnostics for the HTTP status.', 'um-updater' ),
+			'malformed_response' => __( 'The update server returned an invalid response for %s. Review Site Health diagnostics and try again.', 'um-updater' ),
+		];
+		if ( ! isset( $messages[ $result ] ) ) {
+			return;
+		}
+
+		$class = in_array( $result, [ 'update_available', 'already_current' ], true )
+			? 'notice notice-success is-dismissible'
+			: ( in_array( $result, [ 'update_withheld', 'check_in_progress' ], true ) ? 'notice notice-warning is-dismissible' : 'notice notice-error' );
+
+		printf(
+			'<div class="%s"><p>%s</p></div>',
+			esc_attr( $class ),
+			esc_html( sprintf( $messages[ $result ], $this->slug ) )
+		);
+	}
+
 
 	/**
 	 * Add "Check for updates" link to plugin row meta.
@@ -3540,9 +3745,19 @@ class Updater {
 			return $meta;
 		}
 
+		$context   = function_exists( 'is_network_admin' ) && is_network_admin() ? 'network' : 'site';
+		$check_url = add_query_arg(
+			[
+				'action'     => 'um_check_update_' . $this->slug,
+				'um_product' => $this->slug,
+				'um_context' => $context,
+			],
+			admin_url( 'admin-post.php' )
+		);
+
 		$meta[] = sprintf(
 			'<a href="%s">%s</a>',
-			esc_url( wp_nonce_url( admin_url( 'plugins.php?um_check_update=' . $this->slug ), 'um_check_' . $this->slug ) ),
+			esc_url( wp_nonce_url( $check_url, 'um_check_' . $this->slug ) ),
 			esc_html__( 'Check for updates', 'um-updater' )
 		);
 
@@ -4053,13 +4268,21 @@ class Updater {
 		return 403 === (int) $data;
 	}
 
-	private function record_update_check_result( string $result ): void {
+	private function record_update_check_result(
+		string $result,
+		int $http_status = 0,
+		string $server_version = '',
+		string $error = ''
+	): void {
 		$state = $this->scope->get_option( $this->diagnostics_option, [] );
 		$state = is_array( $state ) ? $state : [];
 		$now   = time();
-		$state['last_result']     = substr( sanitize_key( $result ), 0, 64 );
-		$state['last_checked_at'] = $now;
+		$state['last_result']      = substr( sanitize_key( $result ), 0, 64 );
+		$state['last_checked_at']  = $now;
 		$state['cache_written_at'] = $now;
+		$state['http_status']      = max( 0, $http_status );
+		$state['server_version']   = substr( sanitize_text_field( $server_version ), 0, 64 );
+		$state['last_error']       = substr( sanitize_text_field( $error ), 0, 200 );
 		$this->scope->update_option( $this->diagnostics_option, $state );
 	}
 
@@ -4153,18 +4376,12 @@ class Updater {
 	 *
 	 * @return object|null Parsed update manifest or null on failure.
 	 */
-	private function fetch_update_data(): ?object {
-		// Bypass cache on manual "Check Again" click (WP core uses force-check=1).
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		$force = isset( $_GET['force-check'] ) && '1' === $_GET['force-check'];
-
-		// Also support our custom check URL.
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
-		if ( isset( $_GET['um_check_update'] ) && $_GET['um_check_update'] === $this->slug ) {
-			$nonce = sanitize_text_field( wp_unslash( $_GET['_wpnonce'] ?? '' ) );
-			if ( wp_verify_nonce( $nonce, 'um_check_' . $this->slug ) ) {
-				$force = true;
-			}
+	private function fetch_update_data( bool $force = false, bool $allow_get_fallback = true ): ?object {
+		$this->fetch_contended = false;
+		if ( ! $force ) {
+			// Bypass cache on manual "Check Again" click (WP core uses force-check=1).
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$force = isset( $_GET['force-check'] ) && '1' === $_GET['force-check'];
 		}
 
 		// A manual force-check refreshes once per PHP request (#41); the actual
@@ -4184,6 +4401,7 @@ class Updater {
 
 		$lock = $this->scope->acquire_lock( $this->fetch_lock_key, self::FETCH_LOCK_TTL );
 		if ( null === $lock ) {
+			$this->fetch_contended = true;
 			// A concurrent worker owns the miss. Reuse any cache it has already
 			// published; otherwise let this request continue without an offer.
 			$cached = $this->read_cached_manifest();
@@ -4294,7 +4512,7 @@ class Updater {
 		// rate-limit, and server failures must remain failures instead of causing a
 		// second request that could bypass the rejected response.
 		$post_code = is_wp_error( $response ) ? 0 : wp_remote_retrieve_response_code( $response );
-		if ( in_array( $post_code, array( 405, 501 ), true ) ) {
+		if ( $allow_get_fallback && in_array( $post_code, array( 405, 501 ), true ) ) {
 			$response = wp_remote_get( $this->update_url, [
 				'timeout'             => 10,
 				'sslverify'           => true,
@@ -4307,7 +4525,10 @@ class Updater {
 
 		if ( is_wp_error( $response ) ) {
 			$this->cache_manifest_error();
-			$this->record_update_check_result( 'transport_error' );
+			$error_code = method_exists( $response, 'get_error_code' ) ? sanitize_key( (string) $response->get_error_code() ) : '';
+			$error_code = in_array( $error_code, [ 'http_request_failed', 'timeout', 'connect_timeout' ], true ) ? $error_code : 'request_failed';
+			$this->record_update_check_result( 'transport_error', 0, '', sprintf( 'Network request failed (%s).', $error_code ) );
+			// Never persist the raw transport message: it can contain credential-bearing request details.
 			return null;
 		}
 
@@ -4318,14 +4539,14 @@ class Updater {
 			// error sentinel (#42).
 			$retry_after = 429 === $code ? $this->retry_after_seconds( $response ) : 0;
 			$this->cache_manifest_error( $retry_after );
-			$this->record_update_check_result( 'http_' . $code );
+			$this->record_update_check_result( 'http_' . $code, $code, '', sprintf( 'Update server returned HTTP %d.', $code ) );
 			return null;
 		}
 
 		$body = wp_remote_retrieve_body( $response );
 		if ( ! is_string( $body ) || strlen( $body ) > self::MAX_MANIFEST_BYTES ) {
 			$this->cache_manifest_error();
-			$this->record_update_check_result( 'oversized_manifest' );
+			$this->record_update_check_result( 'oversized_manifest', 200, '', 'Update manifest exceeded the allowed response size.' );
 			return null;
 		}
 
@@ -4333,7 +4554,13 @@ class Updater {
 
 		if ( JSON_ERROR_NONE !== json_last_error() || ! $this->is_valid_manifest( $data ) ) {
 			$this->cache_manifest_error();
-			$this->record_update_check_result( JSON_ERROR_NONE === json_last_error() ? 'invalid_manifest' : 'invalid_json' );
+			$invalid_json = JSON_ERROR_NONE !== json_last_error();
+			$this->record_update_check_result(
+				$invalid_json ? 'invalid_json' : 'invalid_manifest',
+				200,
+				'',
+				$invalid_json ? 'Update manifest was not valid JSON.' : 'Update manifest was missing required fields.'
+			);
 			return null;
 		}
 
@@ -4355,7 +4582,7 @@ class Updater {
 		}
 
 		$this->scope->set_transient( $this->cache_key, $data, self::CACHE_TTL );
-		$this->record_update_check_result( 'success' );
+		$this->record_update_check_result( 'success', 200, (string) $data->version );
 
 		return $data;
 		} finally {
